@@ -14,7 +14,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import SummaryCache
+from ..models import SessionSummaryCache, SummaryCache
 from ..scanners.git_scanner import MAX_UNTRACKED_BYTES, _git, _parse_status
 
 MAX_DIFF_BYTES = 80 * 1024
@@ -26,6 +26,15 @@ PROMPT = (
     "Describe: the intent of the change, which files/modules are touched, and anything "
     "risky (migrations, config changes, deleted code, secrets). Plain text only, no "
     "markdown headers, under 200 words."
+)
+
+
+SESSION_PROMPT = (
+    "You are summarizing a Claude Code session for a developer's activity dashboard. "
+    "The user/assistant dialogue follows on stdin (tool calls and results were "
+    "stripped). Describe: what the user asked for, what was actually done, key "
+    "decisions made along the way, and anything unresolved or left as follow-up. "
+    "Plain text only, no markdown headers, under 150 words."
 )
 
 
@@ -124,4 +133,42 @@ def get_or_create_summary(session: Session, repo_id: str, diff: str) -> dict:
         "cached": False,
         "generated_at": generated_at.isoformat(),
         "diff_hash": hash_,
+    }
+
+
+def get_or_create_session_summary(
+    session: Session, session_id: str, conversation: str
+) -> dict:
+    """Cache-aware conversation summary. Failures raise and are never cached."""
+    hash_ = diff_hash(conversation)
+    cached = session.execute(
+        select(SessionSummaryCache).where(
+            SessionSummaryCache.session_id == session_id,
+            SessionSummaryCache.content_hash == hash_,
+        )
+    ).scalar_one_or_none()
+    if cached is not None:
+        return {
+            "summary": cached.summary,
+            "cached": True,
+            "generated_at": cached.generated_at.isoformat(),
+            "content_hash": hash_,
+        }
+
+    summary = run_claude(conversation, prompt=SESSION_PROMPT)
+    generated_at = datetime.now(timezone.utc)
+    session.add(
+        SessionSummaryCache(
+            session_id=session_id,
+            content_hash=hash_,
+            summary=summary,
+            generated_at=generated_at,
+        )
+    )
+    session.commit()
+    return {
+        "summary": summary,
+        "cached": False,
+        "generated_at": generated_at.isoformat(),
+        "content_hash": hash_,
     }

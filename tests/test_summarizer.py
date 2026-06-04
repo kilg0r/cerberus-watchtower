@@ -7,6 +7,7 @@ from watchtower.ai.summarizer import (
     SummarizerError,
     collect_diff,
     diff_hash,
+    get_or_create_session_summary,
     get_or_create_summary,
 )
 
@@ -47,6 +48,31 @@ def test_different_diff_busts_cache(session, monkeypatch):
     second = get_or_create_summary(session, "test", "diff two")
     assert first["diff_hash"] != second["diff_hash"]
     assert second["cached"] is False
+
+
+def test_session_summary_caches_by_content_then_regenerates_on_growth(session, monkeypatch):
+    calls = []
+
+    def fake_run_claude(text: str, prompt: str = "") -> str:
+        calls.append(text)
+        return f"summary #{len(calls)}"
+
+    monkeypatch.setattr(summarizer, "run_claude", fake_run_claude)
+
+    first = get_or_create_session_summary(session, "sess-1", "USER: hi")
+    assert first["cached"] is False
+    assert len(calls) == 1
+
+    # same conversation -> cache hit, no claude run
+    second = get_or_create_session_summary(session, "sess-1", "USER: hi")
+    assert second["cached"] is True
+    assert second["summary"] == first["summary"]
+    assert len(calls) == 1
+
+    # session grew -> new hash -> regenerate
+    third = get_or_create_session_summary(session, "sess-1", "USER: hi\n\nASSISTANT: hello")
+    assert third["cached"] is False
+    assert len(calls) == 2
 
 
 def test_claude_failure_is_not_cached(session, monkeypatch):

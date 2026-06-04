@@ -1,11 +1,33 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { apiFetch } from '../composables/useApi'
 
 const props = defineProps({
   session: { type: Object, required: true },
 })
 
 const showFiles = ref(false)
+const summary = ref(null)
+const summarizing = ref(false)
+const summaryError = ref(null)
+
+async function summarize() {
+  if (summary.value) {
+    summary.value = null // toggle closed
+    return
+  }
+  summarizing.value = true
+  summaryError.value = null
+  try {
+    summary.value = await apiFetch(`/api/activity/${props.session.session_id}/summarize`, {
+      method: 'POST',
+    })
+  } catch (err) {
+    summaryError.value = err.message === 'backend-unreachable' ? 'Backend not reachable' : err.message
+  } finally {
+    summarizing.value = false
+  }
+}
 
 function relative(iso) {
   if (!iso) return '?'
@@ -61,25 +83,54 @@ const shortName = (path) => path.split(/[\\/]/).pop()
       </span>
     </div>
 
-    <div v-if="session.files_edited?.length" class="mt-3">
+    <div class="mt-3 flex items-center gap-4">
       <button
+        v-if="session.files_edited?.length"
         class="text-xs text-coral hover:underline"
         @click="showFiles = !showFiles"
       >
         {{ session.files_edited.length }} file{{ session.files_edited.length === 1 ? '' : 's' }} edited
         {{ showFiles ? '▾' : '▸' }}
       </button>
-      <ul v-if="showFiles" class="mt-1.5 space-y-0.5">
-        <li
-          v-for="file in session.files_edited"
-          :key="file"
-          class="truncate font-mono text-xs text-slate-400"
-          :title="file"
+      <button
+        class="inline-flex items-center gap-1.5 text-xs text-coral hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+        :disabled="summarizing"
+        @click="summarize"
+      >
+        <svg v-if="summarizing" class="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" />
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z" />
+        </svg>
+        {{ summarizing ? 'Summarizing…' : 'Summary' }}
+        <template v-if="!summarizing">{{ summary ? '▾' : '▸' }}</template>
+      </button>
+    </div>
+
+    <ul v-if="showFiles" class="mt-1.5 space-y-0.5">
+      <li
+        v-for="file in session.files_edited"
+        :key="file"
+        class="truncate font-mono text-xs text-slate-400"
+        :title="file"
+      >
+        {{ shortName(file) }}
+        <span class="text-slate-600"> - {{ file }}</span>
+      </li>
+    </ul>
+
+    <p v-if="summaryError" class="mt-2 text-xs text-red-400">{{ summaryError }}</p>
+
+    <div v-if="summary" class="mt-2 rounded-md border border-edge bg-navy/60 p-3">
+      <div class="mb-1.5 flex items-center gap-2">
+        <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Session summary</span>
+        <span
+          v-if="summary.cached"
+          class="rounded-full border border-edge px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-slate-500"
         >
-          {{ shortName(file) }}
-          <span class="text-slate-600"> - {{ file }}</span>
-        </li>
-      </ul>
+          cached
+        </span>
+      </div>
+      <p class="whitespace-pre-line text-xs leading-relaxed text-slate-300">{{ summary.summary }}</p>
     </div>
   </article>
 </template>

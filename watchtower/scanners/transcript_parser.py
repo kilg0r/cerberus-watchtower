@@ -7,12 +7,16 @@ off the hot path for lines we don't care about.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 FILE_EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
 MAX_TRANSCRIPT_BYTES = 60 * 1024 * 1024
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+MAX_MESSAGE_CHARS = 1500
+MAX_CONVERSATION_BYTES = 60 * 1024
 
 
 def _safe_loads(line: str) -> dict | None:
@@ -75,6 +79,70 @@ def parse_transcript(path: Path) -> dict | None:
         "files_edited": files_edited,
         "last_prompt": last_prompt,
     }
+
+
+def find_transcript(session_id: str) -> Path | None:
+    """Locate a session transcript by id across all project slugs."""
+    if not SESSION_ID_RE.match(session_id) or not CLAUDE_PROJECTS_DIR.is_dir():
+        return None
+    for path in CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"):
+        return path
+    return None
+
+
+def _message_text(content) -> str:
+    """Human-readable text from a message content field (string or block list)."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        texts = [
+            block.get("text", "").strip()
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(t for t in texts if t)
+    return ""
+
+
+def extract_conversation(path: Path) -> str:
+    """The user/assistant dialogue of a session as plain text for summarization.
+
+    Tool calls, tool results, and harness-injected content (system reminders,
+    command output - anything starting with '<') are skipped. Long messages are
+    truncated individually; if the whole thing still exceeds the cap, the middle
+    is dropped so the opening ask and the ending state both survive.
+    """
+    try:
+        if path.stat().st_size > MAX_TRANSCRIPT_BYTES:
+            return ""
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+    turns: list[str] = []
+    for line in content.splitlines():
+        if '"type"' not in line:
+            continue
+        record = _safe_loads(line)
+        if not record or record.get("type") not in ("user", "assistant"):
+            continue
+        if record.get("isSidechain"):
+            continue  # subagent traffic - not part of the main conversation
+        text = _message_text((record.get("message") or {}).get("content"))
+        if not text or text.startswith("<"):
+            continue
+        if len(text) > MAX_MESSAGE_CHARS:
+            text = text[:MAX_MESSAGE_CHARS] + " [...truncated]"
+        role = "USER" if record.get("type") == "user" else "ASSISTANT"
+        turns.append(f"{role}: {text}")
+
+    conversation = "\n\n".join(turns)
+    encoded = conversation.encode("utf-8")
+    if len(encoded) > MAX_CONVERSATION_BYTES:
+        head = encoded[: MAX_CONVERSATION_BYTES // 3].decode("utf-8", errors="replace")
+        tail = encoded[-2 * MAX_CONVERSATION_BYTES // 3 :].decode("utf-8", errors="replace")
+        conversation = f"{head}\n\n[... middle of conversation omitted ...]\n\n{tail}"
+    return conversation
 
 
 def recent_sessions(days: int = 3, limit: int = 30) -> list[dict]:

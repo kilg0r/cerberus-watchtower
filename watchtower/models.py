@@ -36,6 +36,21 @@ class Narrative(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime)
 
 
+class SessionSummaryCache(Base):
+    """AI conversation summaries for Claude Code sessions, keyed by session +
+    content hash - an active session regenerates as it grows, a finished one
+    is summarized exactly once."""
+
+    __tablename__ = "session_summary_cache"
+    __table_args__ = (UniqueConstraint("session_id", "content_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    summary: Mapped[str] = mapped_column(Text)
+    generated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
 class SummaryCache(Base):
     """AI diff summaries, keyed by repo + diff content hash so a summary is
     only regenerated when the pending changes actually change."""

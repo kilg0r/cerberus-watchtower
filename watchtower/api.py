@@ -97,10 +97,17 @@ def _project_label(cwd: str | None) -> dict:
     """Map a session cwd onto the repo registry, falling back to the dir name."""
     if not cwd:
         return {"project": "unknown", "repo_id": None}
-    cwd_lower = cwd.lower().replace("/", "\\")
+    cwd_lower = cwd.lower().replace("/", "\\").rstrip("\\")
+    # exact match or boundary-aware prefix (cwd inside the repo); deepest path
+    # wins so sibling repos sharing a name prefix can't shadow each other
+    best = None
     for repo in config.registry():
-        if cwd_lower.startswith(str(repo.path).lower()):
-            return {"project": repo.name, "repo_id": repo.id}
+        repo_path = str(repo.path).lower().rstrip("\\")
+        if cwd_lower == repo_path or cwd_lower.startswith(repo_path + "\\"):
+            if best is None or len(repo_path) > len(str(best.path).rstrip("\\")):
+                best = repo
+    if best is not None:
+        return {"project": best.name, "repo_id": best.id}
     return {"project": cwd.replace("/", "\\").rstrip("\\").rsplit("\\", 1)[-1], "repo_id": None}
 
 
@@ -127,6 +134,25 @@ async def activity() -> dict:
     for event in recent:
         event.update(_project_label(event.get("cwd")))
     return {"sessions": sessions, "events": recent}
+
+
+@app.post("/api/activity/{session_id}/summarize")
+async def summarize_session(session_id: str) -> dict:
+    path = transcript_parser.find_transcript(session_id)
+    if path is None:
+        raise HTTPException(404, f"unknown session: {session_id}")
+    conversation = await asyncio.to_thread(transcript_parser.extract_conversation, path)
+    if not conversation.strip():
+        raise HTTPException(404, "no conversation content in this session")
+
+    def _summarize() -> dict:
+        with get_session_factory()() as session:
+            return summarizer.get_or_create_session_summary(session, session_id, conversation)
+
+    try:
+        return await asyncio.to_thread(_summarize)
+    except summarizer.SummarizerError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.get("/api/ports")
