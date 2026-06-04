@@ -267,8 +267,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
-  <div>
-    <header class="mb-4 flex flex-wrap items-end justify-between gap-3">
+  <div class="flex h-full flex-col">
+    <header class="mb-4 flex shrink-0 flex-wrap items-end justify-between gap-3">
       <div>
         <h1 class="text-xl font-semibold text-white">Architecture</h1>
         <p class="mt-1 text-sm text-slate-500">
@@ -316,15 +316,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       {{ error }}
     </p>
 
-    <div v-else-if="loading" class="space-y-4">
+    <div v-else-if="loading" class="flex min-h-0 flex-1 flex-col gap-4">
       <p class="text-xs text-slate-500">
         {{ isOverview ? 'Scanning all repos - the .NET solutions take a few seconds&hellip;' : `Scanning ${selectedId}&hellip;` }}
       </p>
-      <div class="h-[60vh] animate-pulse rounded-lg border border-edge bg-panel/50" />
+      <div class="flex-1 animate-pulse rounded-lg border border-edge bg-panel/50" />
     </div>
 
     <!-- ============ portfolio overview ============ -->
-    <div v-else-if="isOverview && overview" class="space-y-8">
+    <div v-else-if="isOverview && overview" class="min-h-0 flex-1 space-y-8 overflow-auto pr-1">
       <section v-for="[group, entries] in groupedOverview" :key="group">
         <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">{{ group }}</h2>
         <div class="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
@@ -361,9 +361,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     </div>
 
     <!-- ============ single repo ============ -->
-    <div v-else-if="arch" class="space-y-4">
+    <div v-else-if="arch" class="flex min-h-0 flex-1 flex-col gap-4">
       <!-- shared header: stats + drift + focus controls -->
-      <div class="flex flex-wrap items-center gap-2">
+      <div class="flex shrink-0 flex-wrap items-center gap-2">
         <template v-if="!focusId">
           <span
             v-for="(value, label) in arch.stats"
@@ -410,17 +410,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </label>
       </div>
 
-      <DriftPanel v-if="showDrift && drift" :drift="drift" />
+      <DriftPanel v-if="showDrift && drift" class="max-h-[32vh] shrink-0 overflow-auto" :drift="drift" />
 
       <!-- graph (dotnet / vue / python) with node detail overlay -->
-      <div v-if="hasGraph" class="relative">
+      <div v-if="hasGraph" class="relative min-h-0 flex-[3]">
         <ArchGraph
           :nodes="visibleNodes"
           :edges="visibleEdges"
           :mode="focusId ? 'focus' : 'overview'"
           :focus-id="focusId"
           :legend="LEGENDS[stack] || null"
-          :height-class="focusId ? 'h-[52vh]' : stack === 'dotnet' ? 'h-[58vh]' : 'h-[48vh]'"
+          height-class="h-full"
           @select="selectNode($event)"
           @focus="setFocus($event)"
         />
@@ -486,23 +486,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <!-- dotnet: data flows -->
-      <section v-if="stack === 'dotnet'">
-        <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
+      <section v-if="stack === 'dotnet'" class="flex min-h-0 flex-[2] flex-col">
+        <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
           <template v-if="focusId">Data flows through <span class="font-mono normal-case">{{ focusId }}</span></template>
           <template v-else>Data flows - endpoint &rarr; request &rarr; handler</template>
         </h2>
         <DataFlowTable
+          class="min-h-0 flex-1"
           :endpoints="focusId ? focusEndpoints : arch.endpoints"
-          height-class="max-h-[32vh]"
+          height-class="min-h-0 flex-1"
           @inspect="inspected = $event"
         />
       </section>
 
       <!-- python: deps / endpoints / configs / entry points -->
-      <div v-if="stack === 'python'" class="grid grid-cols-2 gap-4 2xl:grid-cols-4">
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Dependencies</h2>
-          <div class="max-h-72 overflow-auto">
+      <div v-if="stack === 'python'" class="grid min-h-0 flex-[2] grid-cols-2 gap-4 2xl:grid-cols-4">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Dependencies</h2>
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="(version, name) in arch.dependencies" :key="name" class="flex justify-between py-0.5 font-mono text-xs">
               <span class="text-slate-300">{{ name }}</span>
               <span class="text-slate-500">{{ version || '*' }}</span>
@@ -510,9 +511,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p v-if="!Object.keys(arch.dependencies).length" class="py-1 text-xs text-slate-500">none declared</p>
           </div>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Endpoints</h2>
-          <div class="max-h-72 overflow-auto">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Endpoints</h2>
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="(e, i) in arch.endpoints" :key="i" class="flex gap-2 py-0.5 font-mono text-xs">
               <span class="w-14 shrink-0 text-coral">{{ e.verb }}</span>
               <span class="min-w-0 flex-1 truncate text-slate-300">{{ e.route }}</span>
@@ -521,11 +522,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p v-if="!arch.endpoints.length" class="py-1 text-xs text-slate-500">none detected</p>
           </div>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
             Config files ({{ arch.config_files.length }})
           </h2>
-          <div class="max-h-72 overflow-auto">
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="c in arch.config_files" :key="c.path" class="flex gap-2 py-0.5 font-mono text-xs">
               <span class="min-w-0 flex-1 truncate text-slate-300">{{ c.path }}</span>
               <span class="text-slate-500">{{ c.kind }}</span>
@@ -533,8 +534,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p v-if="!arch.config_files.length" class="py-1 text-xs text-slate-500">none</p>
           </div>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Entry points</h2>
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Entry points</h2>
           <p class="font-mono text-xs leading-6 text-slate-300">
             <template v-if="arch.entry_points.length">
               <span v-for="ep in arch.entry_points" :key="ep" class="block">python -m {{ ep }}</span>
@@ -545,19 +546,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <!-- vue: routes / api calls / stores / deps -->
-      <div v-if="stack === 'vue'" class="grid grid-cols-2 gap-4 2xl:grid-cols-4">
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Routes</h2>
-          <div class="max-h-72 overflow-auto">
+      <div v-if="stack === 'vue'" class="grid min-h-0 flex-[2] grid-cols-2 gap-4 2xl:grid-cols-4">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Routes</h2>
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="route in arch.routes" :key="route.path" class="flex gap-3 py-1 font-mono text-xs">
               <span class="min-w-0 flex-1 truncate text-slate-300">{{ route.path }}</span>
               <span class="truncate text-slate-500">{{ route.component || route.name || '-' }}</span>
             </div>
           </div>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">API calls</h2>
-          <div class="max-h-72 overflow-auto">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">API calls</h2>
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="call in arch.api_calls" :key="call.url" class="flex gap-3 py-1 font-mono text-xs">
               <span class="min-w-0 flex-1 truncate text-slate-300">{{ call.url }}</span>
               <span class="truncate text-slate-500">{{ call.file }}</span>
@@ -565,17 +566,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p v-if="!arch.api_calls.length" class="py-1 text-xs text-slate-500">none detected</p>
           </div>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
             Stores ({{ arch.stores.length }})
           </h2>
-          <p class="max-h-72 overflow-auto font-mono text-xs leading-5 text-slate-400">
+          <p class="min-h-0 flex-1 overflow-auto font-mono text-xs leading-5 text-slate-400">
             {{ arch.stores.join(', ') || 'no stores' }}
           </p>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Dependencies</h2>
-          <div class="max-h-72 overflow-auto">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Dependencies</h2>
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="(version, name) in arch.packages.dependencies" :key="name" class="flex justify-between py-0.5 font-mono text-xs">
               <span class="text-slate-300">{{ name }}</span>
               <span class="text-slate-500">{{ version }}</span>
@@ -585,19 +586,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <!-- generic inventory (config / terraform / android / web / mixed) -->
-      <div v-if="arch.languages" class="grid grid-cols-2 gap-4 2xl:grid-cols-3">
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Languages</h2>
-          <div class="max-h-80 overflow-auto">
+      <div v-if="arch.languages" class="grid min-h-0 flex-1 grid-cols-2 gap-4 2xl:grid-cols-3">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Languages</h2>
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="(count, language) in arch.languages" :key="language" class="flex justify-between py-0.5 font-mono text-xs">
               <span class="text-slate-300">{{ language }}</span>
               <span class="text-slate-500">{{ count }} files</span>
             </div>
           </div>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Directories</h2>
-          <div class="max-h-80 overflow-auto">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Directories</h2>
+          <div class="min-h-0 flex-1 overflow-auto">
             <div v-for="dir in arch.directories" :key="dir.name" class="flex gap-3 py-0.5 font-mono text-xs">
               <span class="min-w-0 flex-1 truncate text-slate-300">{{ dir.name }}</span>
               <span class="text-slate-500">{{ dir.files }} files</span>
@@ -605,11 +606,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             </div>
           </div>
         </section>
-        <section class="rounded-lg border border-edge bg-panel p-4">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+        <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
             Docs ({{ arch.docs.length }})
           </h2>
-          <div class="max-h-80 overflow-auto">
+          <div class="min-h-0 flex-1 overflow-auto">
             <p v-for="doc in arch.docs" :key="doc" class="truncate py-0.5 font-mono text-xs text-slate-400">{{ doc }}</p>
             <p v-if="!arch.docs.length" class="py-1 text-xs text-slate-500">no markdown files</p>
           </div>

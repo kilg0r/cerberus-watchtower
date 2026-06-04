@@ -47,8 +47,8 @@ usePolling(() => (now.value = Date.now()), 10_000)
 </script>
 
 <template>
-  <div>
-    <header class="mb-6 flex items-end justify-between">
+  <div class="flex h-full flex-col">
+    <header class="mb-6 flex shrink-0 items-end justify-between">
       <div>
         <h1 class="text-xl font-semibold text-white">Review Queue</h1>
         <p class="mt-1 text-sm text-slate-500">Uncommitted work across registered repos</p>
@@ -72,7 +72,7 @@ usePolling(() => (now.value = Date.now()), 10_000)
     <EmptyState v-else-if="queue !== null && queue.length === 0" />
 
     <!-- side-by-side group columns on wide screens (1080p+) -->
-    <div v-else-if="queue !== null" class="grid items-start gap-8 2xl:grid-cols-2">
+    <div v-else-if="queue !== null" class="grid min-h-0 flex-1 content-start items-start gap-8 overflow-auto pr-1 2xl:grid-cols-2">
       <section v-for="group in groups" :key="group.key">
         <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
           {{ group.label }}

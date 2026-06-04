@@ -29,8 +29,8 @@ const filtered = computed(() => {
 </script>
 
 <template>
-  <div>
-    <div class="mb-3 flex items-center gap-3">
+  <div class="flex min-h-0 flex-col">
+    <div class="mb-3 flex shrink-0 items-center gap-3">
       <input
         v-model="filter"
         type="text"

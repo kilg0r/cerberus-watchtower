@@ -19,6 +19,7 @@ const emit = defineEmits(['select', 'focus'])
 
 const container = ref(null)
 let cy = null
+let resizeObserver = null
 
 const FOLDER_COLORS = {
   presentation: '#38bdf8',
@@ -141,13 +142,30 @@ function build() {
   cy.on('dbltap', 'node', (event) => emit('focus', event.target.id()))
 }
 
-onMounted(build)
+onMounted(() => {
+  build()
+  // keep the canvas matched to its flex-sized container (viewport resizes)
+  let pending = null
+  resizeObserver = new ResizeObserver(() => {
+    clearTimeout(pending)
+    pending = setTimeout(() => {
+      if (cy) {
+        cy.resize()
+        cy.fit(undefined, 30)
+      }
+    }, 150)
+  })
+  resizeObserver.observe(container.value)
+})
 watch(() => [props.nodes, props.edges, props.mode, props.focusId], build, { deep: false })
-onBeforeUnmount(() => cy && cy.destroy())
+onBeforeUnmount(() => {
+  resizeObserver && resizeObserver.disconnect()
+  cy && cy.destroy()
+})
 </script>
 
 <template>
-  <div class="relative">
+  <div class="relative h-full">
     <div ref="container" class="w-full rounded-lg border border-edge bg-navy/60" :class="heightClass" />
     <div class="absolute bottom-3 left-3 flex gap-3 rounded-md border border-edge bg-panel/90 px-3 py-1.5 text-[10px] text-slate-400">
       <span v-for="item in legend || DEFAULT_LEGEND" :key="item.label">

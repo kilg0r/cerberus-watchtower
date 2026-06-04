@@ -24,8 +24,8 @@ const navItems = [
 </script>
 
 <template>
-  <div class="flex min-h-screen">
-    <aside class="fixed inset-y-0 left-0 w-[220px] border-r border-edge bg-panel/60 px-4 py-6">
+  <div class="flex h-screen overflow-hidden">
+    <aside class="w-[220px] shrink-0 border-r border-edge bg-panel/60 px-4 py-6">
       <div class="mb-8 px-2">
         <span class="text-lg font-semibold tracking-tight text-white">Watchtower</span>
         <p class="mt-0.5 text-xs text-slate-500">Cerberus Labs</p>
@@ -46,8 +46,8 @@ const navItems = [
       </nav>
     </aside>
 
-    <main class="ml-[220px] flex-1 px-8 py-6">
-      <div class="mx-auto max-w-[1720px]">
+    <main class="min-w-0 flex-1 overflow-hidden px-8 py-6">
+      <div class="mx-auto h-full max-w-[1720px]">
         <RouterView />
       </div>
     </main>

@@ -44,8 +44,8 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
 </script>
 
 <template>
-  <div>
-    <header class="mb-6 flex items-end justify-between">
+  <div class="flex h-full flex-col">
+    <header class="mb-6 flex shrink-0 items-end justify-between">
       <div>
         <h1 class="text-xl font-semibold text-white">Activity</h1>
         <p class="mt-1 text-sm text-slate-500">Agent sessions and live tool activity</p>
@@ -66,10 +66,10 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
       Backend not running on :8765
     </div>
 
-    <div class="grid items-start gap-6 lg:grid-cols-[1fr_380px]">
+    <div class="grid min-h-0 flex-1 gap-6 lg:grid-cols-[1fr_380px]">
       <!-- sessions -->
-      <section>
-        <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
+      <section class="flex min-h-0 flex-col">
+        <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
           Recent sessions
         </h2>
         <div v-if="sessions === null" class="space-y-3">
@@ -78,17 +78,17 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
         <p v-else-if="!sessions.length" class="rounded-lg border border-dashed border-edge bg-panel/40 px-6 py-10 text-center text-sm text-slate-500">
           No sessions in the last 3 days
         </p>
-        <div v-else class="grid items-start gap-3 2xl:grid-cols-2">
+        <div v-else class="grid min-h-0 flex-1 content-start items-start gap-3 overflow-auto pr-1 2xl:grid-cols-2">
           <SessionCard v-for="session in sessions" :key="session.session_id" :session="session" />
         </div>
       </section>
 
       <!-- live feed -->
-      <section>
-        <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
+      <section class="flex min-h-0 flex-col">
+        <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
           Live feed
         </h2>
-        <div class="max-h-[calc(100vh-220px)] space-y-1 overflow-auto rounded-lg border border-edge bg-panel p-3">
+        <div class="min-h-0 flex-1 space-y-1 overflow-auto rounded-lg border border-edge bg-panel p-3">
           <p v-if="!liveEvents.length" class="py-6 text-center text-xs text-slate-500">
             Waiting for events - hook activity shows up here in real time
           </p>

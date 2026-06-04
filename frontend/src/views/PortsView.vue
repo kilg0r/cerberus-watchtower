@@ -42,8 +42,8 @@ function uptime(seconds) {
 </script>
 
 <template>
-  <div>
-    <header class="mb-6 flex items-end justify-between">
+  <div class="flex h-full flex-col">
+    <header class="mb-6 flex shrink-0 items-end justify-between">
       <div>
         <h1 class="text-xl font-semibold text-white">Ports</h1>
         <p class="mt-1 text-sm text-slate-500">Live socket activity on this machine</p>
@@ -64,9 +64,9 @@ function uptime(seconds) {
       <div v-for="i in 3" :key="i" class="h-24 animate-pulse rounded-lg border border-edge bg-panel/50" />
     </div>
 
-    <div v-else-if="data" class="space-y-6">
+    <div v-else-if="data" class="flex min-h-0 flex-1 flex-col gap-6">
       <!-- stats -->
-      <div class="flex flex-wrap items-center gap-2">
+      <div class="flex shrink-0 flex-wrap items-center gap-2">
         <span class="rounded-full border border-edge bg-panel px-3 py-1 text-xs text-slate-300">
           {{ data.stats.tcp_listeners }} <span class="text-slate-500">tcp listening</span>
         </span>
@@ -87,10 +87,10 @@ function uptime(seconds) {
         </span>
       </div>
 
-      <div class="grid items-start gap-6 xl:grid-cols-[1fr_420px]">
+      <div class="grid min-h-0 flex-1 gap-6 xl:grid-cols-[1fr_420px]">
         <!-- listeners -->
-        <section>
-          <div class="mb-3 flex flex-wrap items-center gap-3">
+        <section class="flex min-h-0 flex-col">
+          <div class="mb-3 flex shrink-0 flex-wrap items-center gap-3">
             <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Listening</h2>
             <input
               v-model="filter"
@@ -107,7 +107,7 @@ function uptime(seconds) {
             <span class="text-xs text-slate-600">{{ listeners.length }} shown</span>
           </div>
 
-          <div class="max-h-[calc(100vh-330px)] overflow-auto rounded-lg border border-edge">
+          <div class="min-h-0 flex-1 overflow-auto rounded-lg border border-edge">
             <table class="w-full text-left text-xs">
               <thead class="sticky top-0 bg-panel-2">
                 <tr class="text-slate-400">
@@ -155,11 +155,11 @@ function uptime(seconds) {
         </section>
 
         <!-- active connections -->
-        <section>
-          <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
+        <section class="flex min-h-0 flex-col">
+          <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
             Active connections - by process &amp; remote
           </h2>
-          <div class="max-h-[calc(100vh-330px)] space-y-1.5 overflow-auto rounded-lg border border-edge bg-panel p-3">
+          <div class="min-h-0 flex-1 space-y-1.5 overflow-auto rounded-lg border border-edge bg-panel p-3">
             <div
               v-for="(t, i) in talkers"
               :key="i"
