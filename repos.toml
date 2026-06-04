@@ -1,0 +1,108 @@
+# Cerberus Watchtower repo registry.
+# Add a [[repos]] block per repository; stack drives which architecture
+# scanner applies (phase 3): dotnet | vue | python | android | terraform | web | mixed
+
+[[repos]]
+id = "paytable-dotnet"
+name = "PayTable .NET"
+path = 'C:\Users\aigor\_dev\_paytable\payTableDotnet'
+stack = "dotnet"
+group = "paytable"
+
+[[repos]]
+id = "paytable-vue"
+name = "PayTable Vue PWA"
+path = 'C:\Users\aigor\_dev\_paytable\payTableVue'
+stack = "vue"
+group = "paytable"
+
+[[repos]]
+id = "paytable-shell"
+name = "PayTable Shell"
+path = 'C:\Users\aigor\_dev\_paytable\payTableShell'
+stack = "android"
+group = "paytable"
+
+[[repos]]
+id = "paytablemx"
+name = "paytable.mx"
+path = 'C:\Users\aigor\_dev\_paytable\paytablemx'
+stack = "web"
+group = "paytable"
+
+[[repos]]
+id = "paytable-infrastructure"
+name = "PayTable Infrastructure"
+path = 'C:\Users\aigor\_dev\_paytable\paytable-infrastructure'
+stack = "terraform"
+group = "paytable"
+
+[[repos]]
+id = "cerberuslabsllc"
+name = "cerberuslabs.tech Site"
+path = 'C:\Users\aigor\_dev\_cerberus\cerberuslabsllc'
+stack = "vue"
+group = "cerberus"
+
+[[repos]]
+id = "cerberus-content-manager"
+name = "Content Manager"
+path = 'C:\Users\aigor\_dev\_cerberus\cerberus-content-manager'
+stack = "python"
+group = "cerberus"
+
+[[repos]]
+id = "cerberus-markets"
+name = "Cerberus Markets"
+path = 'C:\Users\aigor\_dev\_cerberus\cerberus-markets'
+stack = "python"
+group = "cerberus"
+
+[[repos]]
+id = "cerberus-home-hub"
+name = "Home Hub"
+path = 'C:\Users\aigor\_dev\_cerberus\cerberus-home-hub'
+stack = "mixed"
+group = "cerberus"
+
+[[repos]]
+id = "cerberus"
+name = "Cerberus (Financial)"
+path = 'C:\Users\aigor\_dev\_cerberus\Cerberus'
+stack = "dotnet"
+group = "cerberus"
+
+[[repos]]
+id = "cerberus-books"
+name = "Cerberus Books"
+path = 'C:\Users\aigor\_dev\_cerberus\cerberus-books'
+stack = "python"
+group = "cerberus"
+
+[[repos]]
+id = "cerberus-watchtower"
+name = "Watchtower"
+path = 'C:\Users\aigor\_dev\_cerberus\cerberus-watchtower'
+stack = "mixed"
+group = "cerberus"
+
+[[repos]]
+id = "cerberus-claude-config"
+name = "Cerberus Claude Config"
+path = 'C:\Users\aigor\_dev\_cerberus\cerberus-claude-config'
+stack = "config"
+group = "cerberus"
+
+[[repos]]
+id = "paytable-claude-config"
+name = "PayTable Claude Config"
+path = 'C:\Users\aigor\_dev\_paytable\paytable-claude-config'
+stack = "config"
+group = "paytable"
+
+[[repos]]
+id = "rierawedding"
+name = "Riera Wedding"
+path = 'C:\Users\aigor\_dev\_cerberus\rierawedding'
+stack = "vue"
+group = "personal"

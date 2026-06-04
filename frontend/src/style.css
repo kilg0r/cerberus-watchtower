@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+@theme {
+  --color-navy: #0a1628;
+  --color-panel: #111f33;
+  --color-panel-2: #16263e;
+  --color-edge: #1e3050;
+  --color-coral: #ff6b5e;
+  --color-coral-dim: #c2544a;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html {
+  background-color: var(--color-navy);
+}
+
+body {
+  @apply bg-navy text-slate-200 font-sans antialiased;
+}
