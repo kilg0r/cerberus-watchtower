@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import config, drift, events
+from . import config, drift, events, system_ports
 from .ai import narrator, summarizer
 from .db import get_session_factory
 from .scanners import (
@@ -120,6 +120,11 @@ async def activity() -> dict:
     for event in recent:
         event.update(_project_label(event.get("cwd")))
     return {"sessions": sessions, "events": recent}
+
+
+@app.get("/api/ports")
+async def ports() -> dict:
+    return await asyncio.to_thread(system_ports.snapshot)
 
 
 @app.get("/api/events/stream")

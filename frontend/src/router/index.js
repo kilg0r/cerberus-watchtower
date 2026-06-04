@@ -12,6 +12,11 @@ const routes = [
     // lazy: keeps cytoscape out of the main bundle
     component: () => import('../views/ArchitectureView.vue'),
   },
+  {
+    path: '/ports',
+    name: 'ports',
+    component: () => import('../views/PortsView.vue'),
+  },
 ]
 
 export default createRouter({
