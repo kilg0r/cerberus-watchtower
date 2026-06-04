@@ -6,17 +6,31 @@ import DataFlowTable from '../components/DataFlowTable.vue'
 import DriftPanel from '../components/DriftPanel.vue'
 import FlowInspector from '../components/FlowInspector.vue'
 
-const SUPPORTED_STACKS = ['dotnet', 'vue']
+const ALL = '__all__'
 const DEPTHS = [
   { label: 'Direct', value: 1 },
   { label: '2 levels', value: 2 },
   { label: 'All', value: 99 },
 ]
+const LEGENDS = {
+  vue: [
+    { label: 'view', color: '#38bdf8' },
+    { label: 'component', color: '#a78bfa' },
+    { label: 'store', color: '#34d399' },
+  ],
+  python: [
+    { label: 'package', color: '#34d399' },
+    { label: 'module', color: '#38bdf8' },
+  ],
+}
 
 const repos = ref([])
 const selectedId = ref(null)
 const arch = ref(null)
+const overview = ref(null)
+const overviewDrift = ref({})
 const loading = ref(false)
+const refreshingList = ref(false)
 const error = ref(null)
 const hideTests = ref(true)
 const selectedNode = ref(null)
@@ -29,7 +43,7 @@ const narrative = ref(null)
 const narrating = ref(false)
 const cache = new Map()
 
-// shared lookup context for FlowNode drilling
+// shared lookup context for FlowNode drilling (dotnet only)
 provide(
   'archCtx',
   computed(() => ({
@@ -44,14 +58,18 @@ provide(
   }))
 )
 
+const isOverview = computed(() => selectedId.value === ALL)
+const hasGraph = computed(() => Boolean(arch.value?.graph?.nodes?.length))
+const stack = computed(() => arch.value?.stack)
+
 const baseNodes = computed(() => {
   if (!arch.value?.graph) return []
-  return hideTests.value
+  return stack.value === 'dotnet' && hideTests.value
     ? arch.value.graph.nodes.filter((n) => !n.is_test)
     : arch.value.graph.nodes
 })
 
-// ---- focus mode: BFS the dependency neighborhood of one project ----
+// ---- focus mode: BFS the dependency neighborhood of one node (any stack) ----
 const focusIds = computed(() => {
   if (!focusId.value || !arch.value?.graph) return null
   const edges = arch.value.graph.edges
@@ -86,7 +104,7 @@ const visibleEdges = computed(() => {
 })
 
 const focusEndpoints = computed(() => {
-  if (!focusId.value || !arch.value) return []
+  if (!focusId.value || stack.value !== 'dotnet') return []
   return arch.value.endpoints.filter(
     (e) => e.handler_project === focusId.value || e.project === focusId.value
   )
@@ -113,7 +131,7 @@ function selectNode(node) {
 }
 
 async function explain() {
-  if (!selectedNode.value) return
+  if (!selectedNode.value || stack.value !== 'dotnet') return
   narrating.value = true
   try {
     narrative.value = await apiFetch(
@@ -135,14 +153,39 @@ async function loadDrift() {
   }
 }
 
+async function loadOverview(force = false) {
+  if (!force && overview.value) return
+  loading.value = true
+  error.value = null
+  try {
+    overview.value = await apiFetch('/api/architecture-overview')
+    const drifts = await Promise.all(
+      overview.value.map((entry) =>
+        apiFetch(`/api/architecture/${entry.repo_id}/drift`).catch(() => null)
+      )
+    )
+    overviewDrift.value = Object.fromEntries(
+      overview.value.map((entry, i) => [entry.repo_id, drifts[i]])
+    )
+  } catch (err) {
+    error.value = err.message === 'backend-unreachable' ? 'Backend not reachable' : err.message
+  } finally {
+    loading.value = false
+  }
+}
+
 async function load(force = false) {
-  if (!selectedId.value) return
   selectedNode.value = null
   focusId.value = null
   inspected.value = null
   narrative.value = null
   showDrift.value = false
   error.value = null
+  if (!selectedId.value) return
+  if (isOverview.value) {
+    arch.value = null
+    return loadOverview(force)
+  }
   if (!force && cache.has(selectedId.value)) {
     arch.value = cache.get(selectedId.value)
     loadDrift()
@@ -162,6 +205,46 @@ async function load(force = false) {
   }
 }
 
+async function refreshRepoList() {
+  refreshingList.value = true
+  try {
+    const all = await apiFetch('/api/repos?refresh=true')
+    repos.value = all.filter((r) => r.exists)
+    if (selectedId.value !== ALL && !repos.value.some((r) => r.id === selectedId.value)) {
+      selectedId.value = ALL
+      await load()
+    }
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    refreshingList.value = false
+  }
+}
+
+function openRepo(repoId) {
+  selectedId.value = repoId
+  load()
+}
+
+const groupedRepos = computed(() => {
+  const groups = new Map()
+  for (const repo of repos.value) {
+    if (!groups.has(repo.group)) groups.set(repo.group, [])
+    groups.get(repo.group).push(repo)
+  }
+  return [...groups.entries()]
+})
+
+const groupedOverview = computed(() => {
+  if (!overview.value) return []
+  const groups = new Map()
+  for (const entry of overview.value) {
+    if (!groups.has(entry.group)) groups.set(entry.group, [])
+    groups.get(entry.group).push(entry)
+  }
+  return [...groups.entries()]
+})
+
 function onKeydown(event) {
   if (event.key === 'Escape') {
     if (inspected.value) inspected.value = null
@@ -173,9 +256,8 @@ onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   try {
     const all = await apiFetch('/api/repos')
-    repos.value = all.filter((r) => SUPPORTED_STACKS.includes(r.stack) && r.exists)
-    selectedId.value =
-      repos.value.find((r) => r.id === 'paytable-dotnet')?.id || repos.value[0]?.id
+    repos.value = all.filter((r) => r.exists)
+    selectedId.value = repos.value.find((r) => r.id === 'paytable-dotnet')?.id || ALL
     await load()
   } catch (err) {
     error.value = err.message === 'backend-unreachable' ? 'Backend not reachable' : err.message
@@ -191,24 +273,37 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         <h1 class="text-xl font-semibold text-white">Architecture</h1>
         <p class="mt-1 text-sm text-slate-500">
           <template v-if="focusId">
-            <button class="text-coral hover:underline" @click="setFocus(null)">{{ arch?.solution || selectedId }}</button>
+            <button class="text-coral hover:underline" @click="setFocus(null)">{{ selectedId }}</button>
             <span class="mx-1.5 text-slate-600">/</span>
             <span class="font-mono text-slate-300">{{ focusId }}</span>
             <span class="ml-2 text-xs text-slate-600">(esc to zoom out)</span>
           </template>
-          <template v-else>Project structure, dependencies, and data flow</template>
+          <template v-else>Structure, dependencies, and data flow - per stack</template>
         </p>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2">
         <select
           v-model="selectedId"
           class="rounded-md border border-edge bg-panel-2 px-3 py-1.5 text-xs text-slate-200 focus:border-coral/60 focus:outline-none"
           @change="load()"
         >
-          <option v-for="repo in repos" :key="repo.id" :value="repo.id">{{ repo.name }}</option>
+          <option :value="ALL">All repos - portfolio overview</option>
+          <optgroup v-for="[group, items] in groupedRepos" :key="group" :label="group">
+            <option v-for="repo in items" :key="repo.id" :value="repo.id">
+              {{ repo.name }} ({{ repo.stack }})
+            </option>
+          </optgroup>
         </select>
         <button
-          class="rounded-md border border-edge px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-coral/40 hover:text-coral"
+          class="rounded-md border border-edge px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-coral/40 hover:text-coral disabled:opacity-50"
+          :disabled="refreshingList"
+          title="Re-discover repos under the configured roots"
+          @click="refreshRepoList"
+        >
+          {{ refreshingList ? 'Refreshing&hellip;' : 'Refresh list' }}
+        </button>
+        <button
+          class="rounded-md border border-edge px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-coral/40 hover:text-coral disabled:opacity-50"
           :disabled="loading"
           @click="load(true)"
         >
@@ -222,26 +317,60 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     </p>
 
     <div v-else-if="loading" class="space-y-4">
-      <p class="text-xs text-slate-500">Scanning {{ selectedId }}&hellip;</p>
+      <p class="text-xs text-slate-500">
+        {{ isOverview ? 'Scanning all repos - the .NET solutions take a few seconds&hellip;' : `Scanning ${selectedId}&hellip;` }}
+      </p>
       <div class="h-[60vh] animate-pulse rounded-lg border border-edge bg-panel/50" />
     </div>
 
-    <!-- ============ .NET solution ============ -->
-    <div v-else-if="arch && arch.stack === 'dotnet'" class="space-y-4">
+    <!-- ============ portfolio overview ============ -->
+    <div v-else-if="isOverview && overview" class="space-y-8">
+      <section v-for="[group, entries] in groupedOverview" :key="group">
+        <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">{{ group }}</h2>
+        <div class="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+          <button
+            v-for="entry in entries"
+            :key="entry.repo_id"
+            class="rounded-lg border border-edge bg-panel p-4 text-left transition-colors hover:border-coral/40"
+            @click="openRepo(entry.repo_id)"
+          >
+            <div class="flex items-center gap-2">
+              <h3 class="text-sm font-semibold text-white">{{ entry.name }}</h3>
+              <span class="rounded-full border border-edge px-2 py-0.5 font-mono text-[10px] text-slate-400">
+                {{ entry.stack }}
+              </span>
+              <span
+                v-if="overviewDrift[entry.repo_id]?.changed"
+                class="ml-auto flex items-center gap-1 text-[10px] text-amber-400"
+              >
+                <span class="h-1.5 w-1.5 rounded-full bg-amber-400" /> drift
+              </span>
+            </div>
+            <div class="mt-3 flex flex-wrap gap-1.5">
+              <span
+                v-for="(value, label) in entry.stats"
+                :key="label"
+                class="rounded border border-edge bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
+              >
+                {{ value }} {{ label.replace('_', ' ') }}
+              </span>
+            </div>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ single repo ============ -->
+    <div v-else-if="arch" class="space-y-4">
+      <!-- shared header: stats + drift + focus controls -->
       <div class="flex flex-wrap items-center gap-2">
         <template v-if="!focusId">
           <span
-            v-for="(value, label) in {
-              projects: arch.stats.projects,
-              refs: arch.stats.project_refs,
-              handlers: arch.stats.handlers,
-              endpoints: arch.stats.endpoints,
-              packages: arch.stats.packages,
-            }"
+            v-for="(value, label) in arch.stats"
             :key="label"
             class="rounded-full border border-edge bg-panel px-3 py-1 text-xs text-slate-300"
           >
-            {{ value }} <span class="text-slate-500">{{ label }}</span>
+            {{ value }} <span class="text-slate-500">{{ label.replace('_', ' ') }}</span>
           </span>
         </template>
         <template v-else>
@@ -258,8 +387,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             {{ depth.label }}
           </button>
           <span class="text-xs text-slate-500">
-            {{ visibleNodes.length }} projects &middot; {{ focusEndpoints.length }} endpoints flow through
-            <span class="font-mono">{{ focusId }}</span>
+            {{ visibleNodes.length }} nodes around <span class="font-mono">{{ focusId }}</span>
           </span>
         </template>
         <button
@@ -273,7 +401,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <span v-if="drift.changed" class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
           {{ drift.changed ? 'changes detected' : 'no drift' }}
         </button>
-        <label class="ml-auto flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+        <label
+          v-if="stack === 'dotnet'"
+          class="ml-auto flex cursor-pointer items-center gap-2 text-xs text-slate-400"
+        >
           <input v-model="hideTests" type="checkbox" class="accent-[#ff6b5e]" />
           hide test projects ({{ arch.stats.test_projects }})
         </label>
@@ -281,14 +412,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
       <DriftPanel v-if="showDrift && drift" :drift="drift" />
 
-      <!-- screen-wide graph; node detail overlays the graph -->
-      <div class="relative">
+      <!-- graph (dotnet / vue / python) with node detail overlay -->
+      <div v-if="hasGraph" class="relative">
         <ArchGraph
           :nodes="visibleNodes"
           :edges="visibleEdges"
           :mode="focusId ? 'focus' : 'overview'"
           :focus-id="focusId"
-          :height-class="focusId ? 'h-[52vh]' : 'h-[58vh]'"
+          :legend="LEGENDS[stack] || null"
+          :height-class="focusId ? 'h-[52vh]' : stack === 'dotnet' ? 'h-[58vh]' : 'h-[48vh]'"
           @select="selectNode($event)"
           @focus="setFocus($event)"
         />
@@ -296,10 +428,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           v-if="selectedNode"
           class="absolute right-3 top-3 z-10 max-h-[calc(100%-24px)] w-72 overflow-auto rounded-lg border border-edge bg-panel/95 p-4 backdrop-blur"
         >
-          <h3 class="font-mono text-sm font-semibold text-white">{{ selectedNode.label }}</h3>
-          <p class="mt-1 text-xs text-slate-500">
-            {{ selectedNode.framework || 'no framework' }} &middot; {{ selectedNode.file_count }} files
-            <template v-if="selectedNode.handler_count"> &middot; {{ selectedNode.handler_count }} handlers</template>
+          <h3 class="break-all font-mono text-sm font-semibold text-white">{{ selectedNode.label }}</h3>
+          <p class="mt-1 break-all text-xs text-slate-500">
+            <template v-if="stack === 'dotnet'">
+              {{ selectedNode.framework || 'no framework' }} &middot; {{ selectedNode.file_count }} files
+              <template v-if="selectedNode.handler_count"> &middot; {{ selectedNode.handler_count }} handlers</template>
+            </template>
+            <template v-else-if="stack === 'python'">
+              {{ selectedNode.id }} &middot; {{ selectedNode.loc }} loc
+              <template v-if="selectedNode.classes"> &middot; {{ selectedNode.classes }} classes</template>
+            </template>
+            <template v-else>{{ selectedNode.kind }} &middot; {{ selectedNode.id }}</template>
           </p>
           <div class="mt-2 flex gap-2">
             <button
@@ -310,6 +449,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               Focus &rarr;
             </button>
             <button
+              v-if="stack === 'dotnet'"
               class="flex-1 rounded-md border border-edge px-2 py-1 text-xs text-slate-300 hover:border-coral/40 hover:text-coral disabled:opacity-50"
               :disabled="narrating"
               @click="explain"
@@ -326,11 +466,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           </div>
           <div v-if="nodeRefs.uses.length" class="mt-3">
             <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Uses</p>
-            <p class="mt-1 font-mono text-xs leading-5 text-slate-400">{{ nodeRefs.uses.join(', ') }}</p>
+            <p class="mt-1 break-all font-mono text-xs leading-5 text-slate-400">{{ nodeRefs.uses.join(', ') }}</p>
           </div>
           <div v-if="nodeRefs.usedBy.length" class="mt-3">
             <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Used by</p>
-            <p class="mt-1 font-mono text-xs leading-5 text-slate-400">{{ nodeRefs.usedBy.join(', ') }}</p>
+            <p class="mt-1 break-all font-mono text-xs leading-5 text-slate-400">{{ nodeRefs.usedBy.join(', ') }}</p>
           </div>
           <div v-if="selectedNode.packages?.length" class="mt-3">
             <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
@@ -345,7 +485,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </aside>
       </div>
 
-      <section>
+      <!-- dotnet: data flows -->
+      <section v-if="stack === 'dotnet'">
         <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
           <template v-if="focusId">Data flows through <span class="font-mono normal-case">{{ focusId }}</span></template>
           <template v-else>Data flows - endpoint &rarr; request &rarr; handler</template>
@@ -357,48 +498,66 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         />
       </section>
 
-      <FlowInspector v-if="inspected" :endpoint="inspected" @close="inspected = null" />
-    </div>
-
-    <!-- ============ Vue app ============ -->
-    <div v-else-if="arch && arch.stack === 'vue'" class="space-y-6">
-      <div class="flex flex-wrap items-center gap-2">
-        <span
-          v-for="(value, label) in arch.stats"
-          :key="label"
-          class="rounded-full border border-edge bg-panel px-3 py-1 text-xs text-slate-300"
-        >
-          {{ value }} <span class="text-slate-500">{{ label.replace('_', ' ') }}</span>
-        </span>
-        <button
-          v-if="drift && drift.snapshot_count > 0"
-          class="rounded-full border px-3 py-1 text-xs transition-colors"
-          :class="drift.changed
-            ? 'border-amber-500/50 text-amber-400 hover:bg-amber-500/10'
-            : 'border-edge text-slate-500 hover:text-slate-300'"
-          @click="showDrift = !showDrift"
-        >
-          <span v-if="drift.changed" class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
-          {{ drift.changed ? 'changes detected' : 'no drift' }}
-        </button>
+      <!-- python: deps / endpoints / configs / entry points -->
+      <div v-if="stack === 'python'" class="grid grid-cols-2 gap-4 2xl:grid-cols-4">
+        <section class="rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Dependencies</h2>
+          <div class="max-h-72 overflow-auto">
+            <div v-for="(version, name) in arch.dependencies" :key="name" class="flex justify-between py-0.5 font-mono text-xs">
+              <span class="text-slate-300">{{ name }}</span>
+              <span class="text-slate-500">{{ version || '*' }}</span>
+            </div>
+            <p v-if="!Object.keys(arch.dependencies).length" class="py-1 text-xs text-slate-500">none declared</p>
+          </div>
+        </section>
+        <section class="rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Endpoints</h2>
+          <div class="max-h-72 overflow-auto">
+            <div v-for="(e, i) in arch.endpoints" :key="i" class="flex gap-2 py-0.5 font-mono text-xs">
+              <span class="w-14 shrink-0 text-coral">{{ e.verb }}</span>
+              <span class="min-w-0 flex-1 truncate text-slate-300">{{ e.route }}</span>
+              <span class="truncate text-slate-500">{{ e.module }}</span>
+            </div>
+            <p v-if="!arch.endpoints.length" class="py-1 text-xs text-slate-500">none detected</p>
+          </div>
+        </section>
+        <section class="rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+            Config files ({{ arch.config_files.length }})
+          </h2>
+          <div class="max-h-72 overflow-auto">
+            <div v-for="c in arch.config_files" :key="c.path" class="flex gap-2 py-0.5 font-mono text-xs">
+              <span class="min-w-0 flex-1 truncate text-slate-300">{{ c.path }}</span>
+              <span class="text-slate-500">{{ c.kind }}</span>
+            </div>
+            <p v-if="!arch.config_files.length" class="py-1 text-xs text-slate-500">none</p>
+          </div>
+        </section>
+        <section class="rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Entry points</h2>
+          <p class="font-mono text-xs leading-6 text-slate-300">
+            <template v-if="arch.entry_points.length">
+              <span v-for="ep in arch.entry_points" :key="ep" class="block">python -m {{ ep }}</span>
+            </template>
+            <span v-else class="text-slate-500">none (library / scripts)</span>
+          </p>
+        </section>
       </div>
 
-      <DriftPanel v-if="showDrift && drift" :drift="drift" />
-
-      <div class="grid grid-cols-2 gap-4 2xl:grid-cols-4">
+      <!-- vue: routes / api calls / stores / deps -->
+      <div v-if="stack === 'vue'" class="grid grid-cols-2 gap-4 2xl:grid-cols-4">
         <section class="rounded-lg border border-edge bg-panel p-4">
           <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Routes</h2>
-          <div class="max-h-[58vh] overflow-auto">
+          <div class="max-h-72 overflow-auto">
             <div v-for="route in arch.routes" :key="route.path" class="flex gap-3 py-1 font-mono text-xs">
               <span class="min-w-0 flex-1 truncate text-slate-300">{{ route.path }}</span>
               <span class="truncate text-slate-500">{{ route.component || route.name || '-' }}</span>
             </div>
           </div>
         </section>
-
         <section class="rounded-lg border border-edge bg-panel p-4">
           <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">API calls</h2>
-          <div class="max-h-[58vh] overflow-auto">
+          <div class="max-h-72 overflow-auto">
             <div v-for="call in arch.api_calls" :key="call.url" class="flex gap-3 py-1 font-mono text-xs">
               <span class="min-w-0 flex-1 truncate text-slate-300">{{ call.url }}</span>
               <span class="truncate text-slate-500">{{ call.file }}</span>
@@ -406,31 +565,58 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p v-if="!arch.api_calls.length" class="py-1 text-xs text-slate-500">none detected</p>
           </div>
         </section>
-
         <section class="rounded-lg border border-edge bg-panel p-4">
           <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
-            Stores ({{ arch.stores.length }}) &amp; Views ({{ arch.views.length }})
+            Stores ({{ arch.stores.length }})
           </h2>
-          <div class="max-h-[58vh] overflow-auto">
-            <p class="font-mono text-xs leading-5 text-slate-400">{{ arch.stores.join(', ') || 'no stores' }}</p>
-            <p class="mt-2 font-mono text-xs leading-5 text-slate-500">{{ arch.views.join(', ') || 'no views' }}</p>
-          </div>
+          <p class="max-h-72 overflow-auto font-mono text-xs leading-5 text-slate-400">
+            {{ arch.stores.join(', ') || 'no stores' }}
+          </p>
         </section>
-
         <section class="rounded-lg border border-edge bg-panel p-4">
           <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Dependencies</h2>
-          <div class="max-h-[58vh] overflow-auto">
-            <div
-              v-for="(version, name) in arch.packages.dependencies"
-              :key="name"
-              class="flex justify-between py-0.5 font-mono text-xs"
-            >
+          <div class="max-h-72 overflow-auto">
+            <div v-for="(version, name) in arch.packages.dependencies" :key="name" class="flex justify-between py-0.5 font-mono text-xs">
               <span class="text-slate-300">{{ name }}</span>
               <span class="text-slate-500">{{ version }}</span>
             </div>
           </div>
         </section>
       </div>
+
+      <!-- generic inventory (config / terraform / android / web / mixed) -->
+      <div v-if="arch.languages" class="grid grid-cols-2 gap-4 2xl:grid-cols-3">
+        <section class="rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Languages</h2>
+          <div class="max-h-80 overflow-auto">
+            <div v-for="(count, language) in arch.languages" :key="language" class="flex justify-between py-0.5 font-mono text-xs">
+              <span class="text-slate-300">{{ language }}</span>
+              <span class="text-slate-500">{{ count }} files</span>
+            </div>
+          </div>
+        </section>
+        <section class="rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Directories</h2>
+          <div class="max-h-80 overflow-auto">
+            <div v-for="dir in arch.directories" :key="dir.name" class="flex gap-3 py-0.5 font-mono text-xs">
+              <span class="min-w-0 flex-1 truncate text-slate-300">{{ dir.name }}</span>
+              <span class="text-slate-500">{{ dir.files }} files</span>
+              <span class="w-20 truncate text-right text-slate-600">{{ dir.main_language || '' }}</span>
+            </div>
+          </div>
+        </section>
+        <section class="rounded-lg border border-edge bg-panel p-4">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">
+            Docs ({{ arch.docs.length }})
+          </h2>
+          <div class="max-h-80 overflow-auto">
+            <p v-for="doc in arch.docs" :key="doc" class="truncate py-0.5 font-mono text-xs text-slate-400">{{ doc }}</p>
+            <p v-if="!arch.docs.length" class="py-1 text-xs text-slate-500">no markdown files</p>
+          </div>
+        </section>
+      </div>
+
+      <FlowInspector v-if="inspected" :endpoint="inspected" @close="inspected = null" />
     </div>
   </div>
 </template>

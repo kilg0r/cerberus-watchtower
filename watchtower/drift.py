@@ -40,13 +40,33 @@ def snapshot_signature(arch: dict) -> tuple[str, dict]:
             ),
             "stats": arch["stats"],
         }
-    else:  # vue
+    elif arch["stack"] == "vue":
         payload = {
             "routes": sorted(r["path"] for r in arch["routes"]),
             "packages": {
                 **arch["packages"]["dependencies"],
                 **{f"dev:{k}": v for k, v in arch["packages"]["dev_dependencies"].items()},
             },
+            "edges": sorted(
+                f"{e['source']}->{e['target']}"
+                for e in arch.get("graph", {}).get("edges", [])
+            ),
+            "stats": arch["stats"],
+        }
+    elif arch["stack"] == "python":
+        payload = {
+            "modules": sorted(n["id"] for n in arch["graph"]["nodes"]),
+            "edges": sorted(
+                f"{e['source']}->{e['target']}" for e in arch["graph"]["edges"]
+            ),
+            "packages": dict(arch["dependencies"]),
+            "endpoints": sorted(f"{e['verb']} {e['route']}" for e in arch["endpoints"]),
+            "stats": arch["stats"],
+        }
+    else:  # generic inventory stacks (config / terraform / android / web / mixed)
+        payload = {
+            "languages": arch.get("languages", {}),
+            "directories": {d["name"]: d["files"] for d in arch.get("directories", [])},
             "stats": arch["stats"],
         }
     canonical = json.dumps(payload, sort_keys=True)
@@ -85,10 +105,16 @@ def _package_changes(old: dict, new: dict) -> list[dict]:
     return changes
 
 
+def _set_diff(old: dict, new: dict, key: str) -> tuple[list, list]:
+    old_set, new_set = set(old.get(key, [])), set(new.get(key, []))
+    return sorted(new_set - old_set), sorted(old_set - new_set)
+
+
 def _diff_payloads(old: dict, new: dict) -> dict:
     changes = {}
-    if "edges" in new:  # dotnet
-        old_edges, new_edges = set(old.get("edges", [])), set(new["edges"])
+    if "nodes" in new:  # dotnet: project graph with per-project packages
+        added_edges, removed_edges = _set_diff(old, new, "edges")
+        added_eps, removed_eps = _set_diff(old, new, "endpoints")
         old_nodes = {n["id"]: n for n in old.get("nodes", [])}
         new_nodes = {n["id"]: n for n in new["nodes"]}
         package_changes = []
@@ -97,25 +123,49 @@ def _diff_payloads(old: dict, new: dict) -> dict:
                 old_nodes[node_id]["packages"], new_nodes[node_id]["packages"]
             ):
                 package_changes.append({**change, "project": node_id})
-        old_eps = set(old.get("endpoints", []))
-        new_eps = set(new.get("endpoints", []))
         changes = {
             "added_projects": sorted(set(new_nodes) - set(old_nodes)),
             "removed_projects": sorted(set(old_nodes) - set(new_nodes)),
-            "added_edges": sorted(new_edges - old_edges),
-            "removed_edges": sorted(old_edges - new_edges),
-            "added_endpoints": sorted(new_eps - old_eps),
-            "removed_endpoints": sorted(old_eps - new_eps),
+            "added_edges": added_edges,
+            "removed_edges": removed_edges,
+            "added_endpoints": added_eps,
+            "removed_endpoints": removed_eps,
             "package_changes": package_changes,
         }
-    else:  # vue
-        old_routes, new_routes = set(old.get("routes", [])), set(new["routes"])
+    elif "modules" in new:  # python: module import graph
+        added_modules, removed_modules = _set_diff(old, new, "modules")
+        added_edges, removed_edges = _set_diff(old, new, "edges")
+        added_eps, removed_eps = _set_diff(old, new, "endpoints")
         changes = {
-            "added_routes": sorted(new_routes - old_routes),
-            "removed_routes": sorted(old_routes - new_routes),
-            "package_changes": _package_changes(
-                old.get("packages", {}), new["packages"]
-            ),
+            "added_projects": added_modules,
+            "removed_projects": removed_modules,
+            "added_edges": added_edges,
+            "removed_edges": removed_edges,
+            "added_endpoints": added_eps,
+            "removed_endpoints": removed_eps,
+            "package_changes": _package_changes(old.get("packages", {}), new["packages"]),
+        }
+    elif "routes" in new:  # vue
+        added_routes, removed_routes = _set_diff(old, new, "routes")
+        added_edges, removed_edges = _set_diff(old, new, "edges")
+        changes = {
+            "added_routes": added_routes,
+            "removed_routes": removed_routes,
+            "added_edges": added_edges,
+            "removed_edges": removed_edges,
+            "package_changes": _package_changes(old.get("packages", {}), new["packages"]),
+        }
+    else:  # generic inventory
+        old_dirs, new_dirs = old.get("directories", {}), new.get("directories", {})
+        old_langs, new_langs = old.get("languages", {}), new.get("languages", {})
+        changes = {
+            "added_directories": sorted(set(new_dirs) - set(old_dirs)),
+            "removed_directories": sorted(set(old_dirs) - set(new_dirs)),
+            "language_changes": [
+                {"language": lang, "from": old_langs.get(lang), "to": new_langs.get(lang)}
+                for lang in sorted(set(old_langs) | set(new_langs))
+                if old_langs.get(lang) != new_langs.get(lang)
+            ],
         }
     changes["stats_delta"] = {
         key: {"from": old.get("stats", {}).get(key), "to": value}

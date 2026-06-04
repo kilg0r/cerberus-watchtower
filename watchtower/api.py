@@ -11,7 +11,14 @@ from fastapi.responses import FileResponse, StreamingResponse
 from . import config, drift, events
 from .ai import narrator, summarizer
 from .db import get_session_factory
-from .scanners import dotnet_scanner, git_scanner, transcript_parser, vue_scanner
+from .scanners import (
+    dotnet_scanner,
+    generic_scanner,
+    git_scanner,
+    python_scanner,
+    transcript_parser,
+    vue_scanner,
+)
 
 # last successful architecture scan per repo - feeds narrate without rescanning
 _arch_cache: dict[str, dict] = {}
@@ -27,7 +34,9 @@ app.add_middleware(
 
 
 @app.get("/api/repos")
-async def list_repos() -> list[dict]:
+async def list_repos(refresh: bool = False) -> list[dict]:
+    if refresh:
+        config.refresh_registry()
     return [
         {
             "id": repo.id,
@@ -125,7 +134,43 @@ async def event_stream() -> StreamingResponse:
 _ARCHITECTURE_SCANNERS = {
     "dotnet": dotnet_scanner.analyze,
     "vue": vue_scanner.analyze,
+    "python": python_scanner.analyze,
 }
+
+
+def _scan_architecture(repo: config.RepoConfig) -> dict | None:
+    scanner = _ARCHITECTURE_SCANNERS.get(repo.stack)
+    result = scanner(repo.path) if scanner else None
+    if result is None:  # no dedicated scanner, or it found nothing analyzable
+        result = generic_scanner.analyze(repo.path, stack=repo.stack)
+    return result
+
+
+@app.get("/api/architecture-overview")
+async def architecture_overview() -> list[dict]:
+    """Stats-level scan of every registered repo, concurrently."""
+    repos = [r for r in config.registry() if r.path.is_dir()]
+    results = await asyncio.gather(
+        *(asyncio.to_thread(_scan_architecture, repo) for repo in repos)
+    )
+    overview = []
+    with get_session_factory()() as session:
+        for repo, result in zip(repos, results):
+            if result is None:
+                continue
+            _arch_cache[repo.id] = result
+            drift.record_snapshot(session, repo.id, result)
+            overview.append(
+                {
+                    "repo_id": repo.id,
+                    "name": repo.name,
+                    "group": repo.group,
+                    "stack": result["stack"],
+                    "stats": result["stats"],
+                    "scanned_at": result["scanned_at"],
+                }
+            )
+    return overview
 
 
 @app.get("/api/architecture/{repo_id}")
@@ -133,12 +178,9 @@ async def architecture(repo_id: str) -> dict:
     repo = config.repo_by_id(repo_id)
     if repo is None:
         raise HTTPException(404, f"unknown repo: {repo_id}")
-    scanner = _ARCHITECTURE_SCANNERS.get(repo.stack)
-    if scanner is None:
-        raise HTTPException(501, f"architecture scanning not yet supported for stack: {repo.stack}")
-    result = await asyncio.to_thread(scanner, repo.path)
+    result = await asyncio.to_thread(_scan_architecture, repo)
     if result is None:
-        raise HTTPException(404, f"no analyzable {repo.stack} project found in {repo.id}")
+        raise HTTPException(404, f"nothing analyzable found in {repo.id}")
     _arch_cache[repo.id] = result
 
     def _record() -> None:

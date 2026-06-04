@@ -12,6 +12,8 @@ const props = defineProps({
   mode: { type: String, default: 'overview' },
   focusId: { type: String, default: null },
   heightClass: { type: String, default: 'h-[480px]' },
+  // [{label, color}] - overrides the default .NET solution-folder legend
+  legend: { type: Array, default: null },
 })
 const emit = defineEmits(['select', 'focus'])
 
@@ -24,7 +26,26 @@ const FOLDER_COLORS = {
   infrastructure: '#fbbf24',
   tests: '#64748b',
 }
+const KIND_COLORS = {
+  view: '#38bdf8',
+  component: '#a78bfa',
+  store: '#34d399',
+  module: '#38bdf8',
+  package: '#34d399',
+}
 const DEFAULT_COLOR = '#a78bfa'
+
+const DEFAULT_LEGEND = [
+  { label: 'presentation', color: '#38bdf8' },
+  { label: 'core', color: '#34d399' },
+  { label: 'infrastructure', color: '#fbbf24' },
+  { label: 'tests', color: '#64748b' },
+  { label: 'other', color: '#a78bfa' },
+]
+
+function nodeColor(n) {
+  return FOLDER_COLORS[n.folder] || KIND_COLORS[n.kind] || DEFAULT_COLOR
+}
 
 const MODES = {
   overview: { font: 9, node: 18, nodeSep: 18, rankSep: 90 },
@@ -38,7 +59,7 @@ function build() {
     container: container.value,
     elements: [
       ...props.nodes.map((n) => ({
-        data: { ...n, color: FOLDER_COLORS[n.folder] || DEFAULT_COLOR },
+        data: { ...n, color: nodeColor(n) },
         classes: n.id === props.focusId ? 'focused' : '',
       })),
       ...props.edges.map((e, i) => ({
@@ -129,11 +150,9 @@ onBeforeUnmount(() => cy && cy.destroy())
   <div class="relative">
     <div ref="container" class="w-full rounded-lg border border-edge bg-navy/60" :class="heightClass" />
     <div class="absolute bottom-3 left-3 flex gap-3 rounded-md border border-edge bg-panel/90 px-3 py-1.5 text-[10px] text-slate-400">
-      <span><span class="mr-1 inline-block h-2 w-2 rounded-sm bg-sky-400" />presentation</span>
-      <span><span class="mr-1 inline-block h-2 w-2 rounded-sm bg-emerald-400" />core</span>
-      <span><span class="mr-1 inline-block h-2 w-2 rounded-sm bg-amber-400" />infrastructure</span>
-      <span><span class="mr-1 inline-block h-2 w-2 rounded-sm bg-slate-500" />tests</span>
-      <span><span class="mr-1 inline-block h-2 w-2 rounded-sm bg-violet-400" />other</span>
+      <span v-for="item in legend || DEFAULT_LEGEND" :key="item.label">
+        <span class="mr-1 inline-block h-2 w-2 rounded-sm" :style="{ backgroundColor: item.color }" />{{ item.label }}
+      </span>
       <span class="text-slate-500">double-click a node to focus</span>
     </div>
   </div>

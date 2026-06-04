@@ -22,6 +22,10 @@ _COMPONENT_RE = re.compile(
 _API_CALL_RE = re.compile(
     r"(?:\bfetch|\bapiFetch|\w+\.(?:get|post|put|patch|delete))\(\s*[`'\"]([^`'\"]+)"
 )
+_VUE_IMPORT_RE = re.compile(r"import\s+\w+\s+from\s+['\"]([^'\"]+\.vue)['\"]")
+_STORE_IMPORT_RE = re.compile(
+    r"import\s+[^'\"]+from\s+['\"]([^'\"]*\bstores?/[\w./-]+)['\"]"
+)
 
 
 def _src_files(root: Path, suffixes: tuple[str, ...]):
@@ -103,6 +107,57 @@ def _count(repo_path: Path, subdir: str, suffixes: tuple[str, ...]) -> list[str]
     return sorted(p.stem for p in directory.rglob("*") if p.suffix in suffixes)
 
 
+def _node_kind(rel: str) -> str:
+    if "/views/" in f"/{rel}" or rel.startswith("views/"):
+        return "view"
+    if "/components/" in f"/{rel}" or rel.startswith("components/"):
+        return "component"
+    return "vue"
+
+
+def build_component_graph(repo_path: Path) -> tuple[list[dict], list[dict]]:
+    """Component/store import graph - the Vue equivalent of the project graph."""
+    src = repo_path / "src"
+    if not src.is_dir():
+        return [], []
+
+    nodes, by_stem = [], {}
+    for file in _src_files(repo_path, (".vue",)):
+        rel = str(file.relative_to(src)).replace("\\", "/")
+        node_id = rel.removesuffix(".vue")
+        node = {"id": node_id, "label": file.stem, "kind": _node_kind(rel)}
+        nodes.append(node)
+        by_stem.setdefault(file.stem, node_id)
+    for store_dir in ("stores", "store"):
+        base = src / store_dir
+        for file in sorted(base.rglob("*")) if base.is_dir() else []:
+            if file.suffix in (".js", ".ts"):
+                node_id = str(file.relative_to(src)).replace("\\", "/").rsplit(".", 1)[0]
+                nodes.append({"id": node_id, "label": file.stem, "kind": "store"})
+                by_stem.setdefault(file.stem, node_id)
+
+    ids = {n["id"] for n in nodes}
+    edges, seen = [], set()
+    for file in _src_files(repo_path, (".vue", ".js", ".ts")):
+        rel = str(file.relative_to(src)).replace("\\", "/")
+        source = rel.rsplit(".", 1)[0]
+        if source not in ids:
+            continue
+        content = _read(file)
+        targets = []
+        for match in _VUE_IMPORT_RE.finditer(content):
+            stem = match.group(1).rsplit("/", 1)[-1].removesuffix(".vue")
+            targets.append(by_stem.get(stem))
+        for match in _STORE_IMPORT_RE.finditer(content):
+            stem = match.group(1).rsplit("/", 1)[-1].removesuffix(".js").removesuffix(".ts")
+            targets.append(by_stem.get(stem))
+        for target in targets:
+            if target and target != source and (source, target) not in seen:
+                seen.add((source, target))
+                edges.append({"source": source, "target": target, "kind": "import"})
+    return nodes, edges
+
+
 def analyze(repo_path: Path) -> dict | None:
     if not (repo_path / "package.json").is_file():
         return None
@@ -114,6 +169,7 @@ def analyze(repo_path: Path) -> dict | None:
         repo_path, "store", (".js", ".ts")
     )
     api_calls = parse_api_calls(repo_path)
+    nodes, edges = build_component_graph(repo_path)
     return {
         "stack": "vue",
         "scanned_at": datetime.now(timezone.utc).isoformat(),
@@ -123,6 +179,7 @@ def analyze(repo_path: Path) -> dict | None:
         "components": components,
         "stores": stores,
         "api_calls": api_calls,
+        "graph": {"nodes": nodes, "edges": edges},
         "stats": {
             "dependencies": len(packages["dependencies"]),
             "routes": len(routes),

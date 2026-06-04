@@ -17,6 +17,8 @@ const sections = computed(() => {
     { key: 'removed_endpoints', label: 'Removed endpoints', class: 'text-red-400', prefix: '−' },
     { key: 'added_routes', label: 'New routes', class: 'text-emerald-400', prefix: '+' },
     { key: 'removed_routes', label: 'Removed routes', class: 'text-red-400', prefix: '−' },
+    { key: 'added_directories', label: 'New directories', class: 'text-emerald-400', prefix: '+' },
+    { key: 'removed_directories', label: 'Removed directories', class: 'text-red-400', prefix: '−' },
   ]
   return defs
     .filter((d) => c[d.key]?.length)
@@ -24,6 +26,7 @@ const sections = computed(() => {
 })
 
 const packageChanges = computed(() => props.drift.changes?.package_changes || [])
+const languageChanges = computed(() => props.drift.changes?.language_changes || [])
 const statsDelta = computed(() => Object.entries(props.drift.changes?.stats_delta || {}))
 
 const when = (iso) => (iso ? new Date(iso).toLocaleString() : '?')
@@ -64,6 +67,17 @@ const when = (iso) => (iso ? new Date(iso).toLocaleString() : '?')
             {{ c.package }}
             <span v-if="c.project" class="text-slate-600">({{ c.project }})</span>
             <span class="text-slate-500">{{ c.from || 'added' }} &rarr; {{ c.to || 'removed' }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div v-if="languageChanges.length">
+        <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+          File count changes ({{ languageChanges.length }})
+        </p>
+        <ul class="mt-1 max-h-40 overflow-auto">
+          <li v-for="(c, i) in languageChanges" :key="i" class="py-0.5 font-mono text-xs text-slate-300">
+            {{ c.language }} <span class="text-slate-500">{{ c.from ?? 0 }} &rarr; {{ c.to ?? 0 }}</span>
           </li>
         </ul>
       </div>
