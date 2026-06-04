@@ -10,15 +10,19 @@
 .PARAMETER NoBrowser
     Start/verify the server without opening the dashboard.
 
+.PARAMETER Browser
+    Open in the default browser instead of the chromeless Edge app window.
+
 .PARAMETER Stop
     Stop the running Watchtower server.
 
 .EXAMPLE
-    watchtower            # (via profile function) start if needed + open dashboard
+    watchtower            # (via profile function) start if needed + open app window
     watchtower -Stop      # shut the server down
 #>
 param(
     [switch]$NoBrowser,
+    [switch]$Browser,
     [switch]$Stop
 )
 
@@ -71,5 +75,15 @@ if (Test-Watchtower) {
 }
 
 if (-not $NoBrowser) {
-    Start-Process $Url
+    $edge = @(
+        "$env:ProgramFiles (x86)\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    if ($Browser -or -not $edge) {
+        Start-Process $Url
+    } else {
+        # chromeless app window - native feel, own taskbar identity
+        Start-Process $edge -ArgumentList "--app=$Url"
+    }
 }

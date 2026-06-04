@@ -1,5 +1,6 @@
 fastapi>=0.115
 psutil>=6.0
+winotify>=1.1; sys_platform == 'win32'
 uvicorn[standard]>=0.34
 sqlalchemy>=2.0
 pytest>=8.3

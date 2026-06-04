@@ -26,6 +26,7 @@ def main() -> None:
         "cwd": payload.get("cwd"),
         "tool_name": payload.get("tool_name"),
         "file_path": tool_input.get("file_path"),
+        "message": payload.get("message"),  # Notification events carry text
     }
     EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     with EVENTS_FILE.open("a", encoding="utf-8") as f:

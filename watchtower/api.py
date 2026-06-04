@@ -1,14 +1,14 @@
 """Cerberus Watchtower API - serves the dashboard on 127.0.0.1:8765."""
 
 import asyncio
-
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import config, drift, events, system_ports
+from . import config, drift, events, notifier, system_ports
 from .ai import narrator, summarizer
 from .db import get_session_factory
 from .scanners import (
@@ -23,7 +23,14 @@ from .scanners import (
 # last successful architecture scan per repo - feeds narrate without rescanning
 _arch_cache: dict[str, dict] = {}
 
-app = FastAPI(title="Cerberus Watchtower")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    notify_task = asyncio.create_task(notifier.run())
+    yield
+    notify_task.cancel()
+
+
+app = FastAPI(title="Cerberus Watchtower", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

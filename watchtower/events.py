@@ -39,28 +39,38 @@ def read_recent_events(limit: int = 100) -> list[dict]:
     return list(reversed(events[-limit:]))
 
 
+def current_position() -> int:
+    return EVENTS_FILE.stat().st_size if EVENTS_FILE.is_file() else 0
+
+
+def read_new(position: int) -> tuple[list[str], int]:
+    """New complete lines appended since `position` (handles truncation)."""
+    try:
+        size = EVENTS_FILE.stat().st_size if EVENTS_FILE.is_file() else 0
+    except OSError:
+        size = 0
+    if size < position:  # rotated/truncated
+        position = 0
+    if size <= position:
+        return [], position
+    with EVENTS_FILE.open("rb") as f:
+        f.seek(position)
+        chunk = f.read().decode("utf-8", errors="replace")
+    return [line for line in chunk.splitlines() if line.strip()], size
+
+
 async def stream_events():
     """SSE generator: yields new event lines as they are appended, with
     heartbeats so proxies and EventSource keep the connection alive."""
-    position = EVENTS_FILE.stat().st_size if EVENTS_FILE.is_file() else 0
+    position = current_position()
     idle = 0
     while True:
         await asyncio.sleep(1)
         idle += 1
-        try:
-            size = EVENTS_FILE.stat().st_size if EVENTS_FILE.is_file() else 0
-        except OSError:
-            size = 0
-        if size < position:  # rotated/truncated
-            position = 0
-        if size > position:
-            with EVENTS_FILE.open("rb") as f:
-                f.seek(position)
-                chunk = f.read().decode("utf-8", errors="replace")
-            position = size
-            for line in chunk.splitlines():
-                if line.strip():
-                    yield f"data: {line}\n\n"
+        lines, position = read_new(position)
+        if lines:
+            for line in lines:
+                yield f"data: {line}\n\n"
             idle = 0
         elif idle >= 15:
             yield ": heartbeat\n\n"
