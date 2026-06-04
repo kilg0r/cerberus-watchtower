@@ -8,7 +8,8 @@ with call-flow drill-down, drift detection, and AI narratives.
 
 ```powershell
 .venv\Scripts\python.exe -m watchtower          # run server -> http://127.0.0.1:8765
-.venv\Scripts\python.exe -m pytest tests/       # run tests (30 passing)
+scripts\Start-Watchtower.ps1                    # idempotent launcher (-Stop | -NoBrowser); `watchtower` profile fn
+.venv\Scripts\python.exe -m pytest tests/       # run tests (37 passing)
 cd frontend; npm run dev                        # frontend dev mode (proxies /api to :8765)
 cd frontend; npm run build                      # production build -> frontend/dist
 ```
@@ -19,8 +20,11 @@ cd frontend; npm run build                      # production build -> frontend/d
   - `watchtower/api.py` - all routes; serves `frontend/dist` as SPA when built
   - `watchtower/config.py` - repo registry loaded from `repos.toml` (15 repos)
   - `watchtower/scanners/` - `git_scanner` (review queue), `dotnet_scanner`
-    (.sln/.csproj graph + MediatR flows), `vue_scanner` (routes/stores/deps),
+    (.sln/.csproj graph + MediatR flows), `vue_scanner` (component/store graph,
+    routes, deps), `python_scanner` (module import graph, deps, endpoints,
+    config inventory), `generic_scanner` (fallback inventory),
     `transcript_parser` (Claude Code session history)
+  - `watchtower/system_ports.py` - live OS socket table via psutil (Ports tab)
   - `watchtower/ai/` - `summarizer` (diff summaries), `narrator` (project
     narratives); both shell out to `claude -p` headless
   - `watchtower/drift.py` - architecture snapshots + structural diffing
@@ -57,17 +61,15 @@ cd frontend; npm run build                      # production build -> frontend/d
 
 ## Registry (`repos.toml`)
 
-```toml
-[[repos]]
-id = "paytable-dotnet"      # unique slug used in API routes
-name = "PayTable .NET"
-path = 'C:\...\payTableDotnet'   # single-quoted TOML literal for backslashes
-stack = "dotnet"            # dotnet | vue | python | android | terraform | web | config | mixed
-group = "paytable"          # paytable | cerberus | personal
-```
+Auto-discovery: `[[roots]]` entries are scanned for child git repos with stack
+inference; `[overrides.<folder>]` customizes id/name/stack/group or includes a
+non-git dir (`include = true`). **Keep override ids stable** - caches and
+snapshots are keyed by repo id. `/api/repos?refresh=true` (or the "Refresh
+list" button) re-discovers without a restart.
 
-Only `dotnet` and `vue` stacks get architecture scanning; everything else
-returns 501 from `/api/architecture/{id}` (graceful).
+Architecture scanners by stack: dotnet, vue, python get dedicated scanners
+with graphs; every other stack falls back to `generic_scanner` (languages /
+directories / docs inventory) - nothing 501s.
 
 ## Testing
 
