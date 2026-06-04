@@ -1,75 +1,121 @@
 # Cerberus Watchtower
 
-Eagle's-eye dashboard over Cerberus Labs / PayTable codebases:
+An eagle's-eye dashboard over a multi-repo codebase. Watchtower scans the
+repositories you register and answers three questions that get harder as a
+platform grows: what's changing right now, what's waiting for review, and what
+does the architecture actually look like today.
 
-1. **Review Queue** - uncommitted work across all registered repos, with on-demand AI
-   change summaries (cached by diff hash, so summaries only regenerate when the
-   pending changes actually change)
-2. **Activity** - live agent sessions: Claude Code hooks stream events over SSE,
-   transcript parsing backfills session history (tools used, files edited, prompts)
-3. **Architecture** - dependency graphs and data-flow maps, re-derived per scan:
-   - **.NET**: .sln/.csproj project graph (solution-folder layering, NuGet packages),
-     MediatR handler index, endpoint → request → handler data flows, dispatch sites
-   - **Vue**: npm deps, router routes → components, stores/views, API call sites
-   - Interactive Cytoscape graph with test-project toggle and per-node detail panel
-   - Focus mode (double-click a project), endpoint call-flow inspector (handler →
-     services → implementations), AI project narratives, and drift detection
-     (snapshots recorded per structural change; diffs shown as added/removed
-     edges, endpoints, package bumps)
+Built to watch the Cerberus Labs / PayTable portfolio - a 44-project .NET
+solution, several Vue apps, Python services, and infrastructure repos - from a
+single screen.
+
+## Views
+
+### Review Queue
+Uncommitted work across every registered repo, refreshed every 30 seconds:
+branch, ahead/behind upstream, per-file diffstat, last commit. Click any file
+for its colorized unified diff. One button generates an AI summary of the
+pending changes - intent, modules touched, risk flags - cached by diff hash so
+it only regenerates when the changes change.
+
+### Activity
+Live feed of Claude Code agent activity on the machine, streamed over SSE from
+lifecycle hooks (session start/stop, file edits, subagent completion). Session
+cards backfilled from transcript parsing: what each session worked on, which
+files it edited, tool usage, the prompt that started it, and whether it's
+active right now.
+
+### Architecture
+Re-derived from source on every scan, so the map cannot go stale:
+
+- **.NET solutions** - project dependency graph from `.sln`/`.csproj`
+  (solution-folder layering, NuGet packages), a MediatR handler index, and full
+  data flows: endpoint → request → handler → services → implementations.
+  Handles both constructor injection and service-locator/base-class field
+  patterns.
+- **Vue apps** - routes → components, stores, npm dependencies, API call sites.
+- **Interactivity** - double-click any project to focus on its dependency
+  neighborhood (depth-selectable, screen-wide). Click any endpoint to open the
+  call-flow inspector and drill from controller to the services that do the
+  work, including nested MediatR dispatches.
+- **Drift detection** - every structural change records a snapshot; the diff
+  between the last two (new/removed dependency edges, endpoints, package bumps)
+  surfaces as a "changes detected" chip. The day a module grows an edge it
+  shouldn't have, you see it.
+- **AI narratives** - per-project explanations ("what is this module
+  responsible for, and why is it shaped this way") generated from structural
+  facts and cached until the structure changes.
 
 ## Stack
 
-- Backend: Python 3.12 + FastAPI + SQLAlchemy/SQLite, port **8765**
-- Frontend: Vue 3 + Vite + Tailwind CSS v4
-- AI summaries: `claude -p` headless (Claude Code CLI must be on PATH)
-- Data dir: `~/.cerberus-watchtower/` (summary cache DB)
+| Layer | Tech |
+|---|---|
+| Backend | Python 3.12, FastAPI, SQLAlchemy + SQLite, port 8765 |
+| Frontend | Vue 3, Vite, Tailwind CSS v4, Cytoscape.js (dagre layout) |
+| AI | Claude Code CLI in headless mode (`claude -p`), hash-keyed caching |
+| Agent feed | Claude Code hooks → append-only JSONL → SSE |
 
-## Run
+Static analysis is heuristic by design - regex and XML parsing, no compiler
+services. The trade is deliberate: an always-current map beats a perfect map
+that's expensive to rebuild. Against the primary .NET solution it traces 431
+endpoints to handlers with one miss, in about six seconds.
+
+## Quick start
 
 ```powershell
-# backend (serves frontend/dist too, if built)
+# backend
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# frontend
+cd frontend
+npm install
+npm run build
+cd ..
+
+# run - serves the built frontend at http://127.0.0.1:8765
 .venv\Scripts\python.exe -m watchtower
-
-# frontend dev mode (hot reload, proxies /api to :8765)
-cd frontend; npm run dev
-
-# frontend production build
-cd frontend; npm run build
 ```
 
-With `frontend/dist` built, the whole dashboard is just `python -m watchtower` →
-http://127.0.0.1:8765
-
-## Tests
-
-```powershell
-.venv\Scripts\python.exe -m pytest tests/
-```
-
-## Repo registry — `repos.toml`
+Register repos in `repos.toml`:
 
 ```toml
 [[repos]]
-id = "paytable-dotnet"            # unique slug, used in API routes
-name = "PayTable .NET"            # display name
-path = 'C:\path\to\repo'          # absolute path (single-quoted TOML literal)
-stack = "dotnet"                  # dotnet | vue | python | android | terraform | web | mixed
-group = "paytable"                # dashboard section grouping
+id = "my-api"                    # unique slug, used in API routes
+name = "My API"
+path = 'C:\path\to\repo'         # single-quoted TOML literal
+stack = "dotnet"                 # dotnet | vue | python | ... (dotnet/vue get architecture scanning)
+group = "myteam"                 # dashboard section grouping
 ```
+
+### Agent feed hooks (optional)
+
+`hooks/emit_event.py` is a stdlib-only, append-and-exit emitter designed to be
+registered in `~/.claude/settings.json` for `SessionStart`, `PostToolUse`
+(matcher `Edit|Write|NotebookEdit`), `Stop`, and `SubagentStop` - async
+exec-form, so it adds zero latency to agent sessions. Events land in
+`~/.cerberus-watchtower/events.jsonl`.
 
 ## API
 
-- `GET /api/repos` - registry with exists/is_git checks
-- `GET /api/review-queue` - repos with uncommitted changes (branch, ahead/behind, per-file diffstat, last commit)
-- `GET /api/review-queue/{repo_id}/diff?path=...` - unified diff for one pending file
-- `POST /api/review-queue/{repo_id}/summarize` - AI summary of pending diff (cached)
-- `GET /api/activity` - recent agent sessions + events; `GET /api/events/stream` - SSE live feed
-- `GET /api/architecture/{repo_id}` - architecture snapshot (dotnet + vue stacks; others 501)
-- `GET /api/architecture/{repo_id}/drift` - diff vs previous snapshot
-- `POST /api/architecture/{repo_id}/narrate/{node_id}` - AI project narrative (cached by structure)
+| Route | Purpose |
+|---|---|
+| `GET /api/repos` | registry with exists/is_git checks |
+| `GET /api/review-queue` | repos with uncommitted changes |
+| `GET /api/review-queue/{id}/diff?path=` | unified diff for one pending file |
+| `POST /api/review-queue/{id}/summarize` | AI summary of pending diff (cached) |
+| `GET /api/activity` | recent agent sessions + events |
+| `GET /api/events/stream` | SSE live event feed |
+| `GET /api/architecture/{id}` | full architecture snapshot |
+| `GET /api/architecture/{id}/drift` | structural diff vs previous snapshot |
+| `POST /api/architecture/{id}/narrate/{node}` | AI project narrative (cached) |
 
-## Claude Code hooks
+## Development
 
-`hooks/emit_event.py` powers the live feed - registered in `~/.claude/settings.json`
-for SessionStart / PostToolUse (Edit|Write|NotebookEdit) / Stop / SubagentStop,
-async exec-form, appends to `~/.cerberus-watchtower/events.jsonl`.
+```powershell
+.venv\Scripts\python.exe -m pytest tests/    # 30 tests; scanners run against synthetic fixtures
+cd frontend; npm run dev                     # hot reload on :5173, /api proxied to :8765
+```
+
+Data lives in `~/.cerberus-watchtower/` (summary/narrative caches, architecture
+snapshots, event log). Delete it to reset - everything regenerates.
