@@ -1,10 +1,16 @@
 <script setup>
 import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
 import { apiFetch } from '../composables/useApi'
+import { useEdgeResize } from '../composables/useEdgeResize'
 import ArchGraph from '../components/ArchGraph.vue'
 import DataFlowTable from '../components/DataFlowTable.vue'
 import DriftPanel from '../components/DriftPanel.vue'
 import FlowInspector from '../components/FlowInspector.vue'
+import ProjectMethodsPanel from '../components/ProjectMethodsPanel.vue'
+import SplitPane from '../components/SplitPane.vue'
+
+// node detail overlay on the graph - drag its left edge to widen
+const aside = useEdgeResize('arch-aside', { initial: 448, min: 280, max: 880, edge: 'left' })
 
 const ALL = '__all__'
 const DEPTHS = [
@@ -43,19 +49,40 @@ const narrative = ref(null)
 const narrating = ref(false)
 const cache = new Map()
 
-// shared lookup context for FlowNode drilling (dotnet only)
+// shared lookup context for FlowNode/MethodNode drilling (dotnet only)
 provide(
   'archCtx',
-  computed(() => ({
-    types: arch.value?.types || {},
-    classDeps: arch.value?.class_deps || {},
-    implementations: arch.value?.implementations || {},
-    classSends: arch.value?.class_sends || {},
-    classServiceUses: arch.value?.class_service_uses || {},
-    handlerByRequest: Object.fromEntries(
-      (arch.value?.handlers || []).map((h) => [h.request, h])
-    ),
-  }))
+  computed(() => {
+    const implementations = arch.value?.implementations || {}
+    const classMethods = arch.value?.class_methods || {}
+    // reverse method-call index: "Type.method" -> callers. Calls to an
+    // interface count for the interface and every implementation, so the
+    // "called from outside" view works from either side.
+    const callersOf = {}
+    for (const [cls, methods] of Object.entries(classMethods)) {
+      for (const method of methods) {
+        for (const call of method.calls || []) {
+          if (call.type === cls) continue // self calls aren't cross-references
+          for (const target of [call.type, ...(implementations[call.type] || [])]) {
+            const key = `${target}.${call.method}`
+            ;(callersOf[key] ||= []).push({ class: cls, method: method.name })
+          }
+        }
+      }
+    }
+    return {
+      types: arch.value?.types || {},
+      classDeps: arch.value?.class_deps || {},
+      implementations,
+      classSends: arch.value?.class_sends || {},
+      classServiceUses: arch.value?.class_service_uses || {},
+      classMethods,
+      callersOf,
+      handlerByRequest: Object.fromEntries(
+        (arch.value?.handlers || []).map((h) => [h.request, h])
+      ),
+    }
+  })
 )
 
 const isOverview = computed(() => selectedId.value === ALL)
@@ -412,8 +439,16 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
       <DriftPanel v-if="showDrift && drift" class="max-h-[32vh] shrink-0 overflow-auto" :drift="drift" />
 
-      <!-- graph (dotnet / vue / python) with node detail overlay -->
-      <div v-if="hasGraph" class="relative min-h-0 flex-[3]">
+      <!-- graph over stack panels - drag the divider to rebalance -->
+      <SplitPane
+        v-if="hasGraph"
+        direction="vertical"
+        storage-key="arch-graph"
+        :initial="0.6"
+        class="min-h-0 flex-1"
+      >
+        <template #first>
+        <div class="relative h-full min-h-0">
         <ArchGraph
           :nodes="visibleNodes"
           :edges="visibleEdges"
@@ -426,8 +461,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         />
         <aside
           v-if="selectedNode"
-          class="absolute right-3 top-3 z-10 max-h-[calc(100%-24px)] w-72 overflow-auto rounded-lg border border-edge bg-panel/95 p-4 backdrop-blur"
+          class="absolute right-3 top-3 z-10 flex max-h-[calc(100%-24px)] max-w-[calc(100%-24px)] rounded-lg border border-edge bg-panel/95 backdrop-blur"
+          :style="{ width: aside.size.value + 'px' }"
         >
+          <div
+            class="w-1.5 shrink-0 cursor-col-resize rounded-l-lg transition-colors hover:bg-coral/40"
+            :class="aside.dragging.value ? 'bg-coral/60' : ''"
+            title="drag to resize - double-click to reset"
+            @pointerdown="aside.onPointerDown"
+            @pointermove="aside.onPointerMove"
+            @pointerup="aside.onPointerUp"
+            @dblclick="aside.reset"
+          />
+          <div class="min-w-0 flex-1 overflow-auto p-4">
           <h3 class="break-all font-mono text-sm font-semibold text-white">{{ selectedNode.label }}</h3>
           <p class="mt-1 break-all text-xs text-slate-500">
             <template v-if="stack === 'dotnet'">
@@ -465,12 +511,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p class="whitespace-pre-line text-xs leading-relaxed text-slate-300">{{ narrative.narrative }}</p>
           </div>
           <div v-if="nodeRefs.uses.length" class="mt-3">
-            <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Uses</p>
-            <p class="mt-1 break-all font-mono text-xs leading-5 text-slate-400">{{ nodeRefs.uses.join(', ') }}</p>
+            <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Uses ({{ nodeRefs.uses.length }})</p>
+            <div class="mt-1 flex flex-wrap gap-1">
+              <span
+                v-for="ref in nodeRefs.uses"
+                :key="ref"
+                class="rounded border border-edge bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
+              >{{ ref }}</span>
+            </div>
           </div>
           <div v-if="nodeRefs.usedBy.length" class="mt-3">
-            <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Used by</p>
-            <p class="mt-1 break-all font-mono text-xs leading-5 text-slate-400">{{ nodeRefs.usedBy.join(', ') }}</p>
+            <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Used by ({{ nodeRefs.usedBy.length }})</p>
+            <div class="mt-1 flex flex-wrap gap-1">
+              <span
+                v-for="ref in nodeRefs.usedBy"
+                :key="ref"
+                class="rounded border border-edge bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
+              >{{ ref }}</span>
+            </div>
           </div>
           <div v-if="selectedNode.packages?.length" class="mt-3">
             <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
@@ -482,25 +540,52 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               </li>
             </ul>
           </div>
+          </div>
         </aside>
-      </div>
+        </div>
+        </template>
+        <template #second>
+        <div class="flex h-full min-h-0 flex-col pt-2">
 
-      <!-- dotnet: data flows -->
-      <section v-if="stack === 'dotnet'" class="flex min-h-0 flex-[2] flex-col">
+      <!-- dotnet: data flows (+ resizable method surface of the focused project) -->
+      <SplitPane
+        v-if="stack === 'dotnet' && focusId"
+        direction="horizontal"
+        storage-key="arch-flows-methods"
+        :initial="0.5"
+        class="min-h-0 flex-1"
+      >
+        <template #first>
+          <section class="flex h-full min-h-0 flex-col">
+            <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
+              Data flows through <span class="font-mono normal-case">{{ focusId }}</span>
+            </h2>
+            <DataFlowTable
+              class="min-h-0 flex-1"
+              :endpoints="focusEndpoints"
+              height-class="min-h-0 flex-1"
+              @inspect="inspected = $event"
+            />
+          </section>
+        </template>
+        <template #second>
+          <ProjectMethodsPanel :project-id="focusId" class="h-full" />
+        </template>
+      </SplitPane>
+      <section v-else-if="stack === 'dotnet'" class="flex min-h-0 flex-1 flex-col">
         <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
-          <template v-if="focusId">Data flows through <span class="font-mono normal-case">{{ focusId }}</span></template>
-          <template v-else>Data flows - endpoint &rarr; request &rarr; handler</template>
+          Data flows - endpoint &rarr; request &rarr; handler
         </h2>
         <DataFlowTable
           class="min-h-0 flex-1"
-          :endpoints="focusId ? focusEndpoints : arch.endpoints"
+          :endpoints="arch.endpoints"
           height-class="min-h-0 flex-1"
           @inspect="inspected = $event"
         />
       </section>
 
       <!-- python: deps / endpoints / configs / entry points -->
-      <div v-if="stack === 'python'" class="grid min-h-0 flex-[2] grid-cols-2 gap-4 2xl:grid-cols-4">
+      <div v-if="stack === 'python'" class="grid min-h-0 flex-1 grid-cols-2 gap-4 2xl:grid-cols-4">
         <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
           <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Dependencies</h2>
           <div class="min-h-0 flex-1 overflow-auto">
@@ -546,7 +631,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       </div>
 
       <!-- vue: routes / api calls / stores / deps -->
-      <div v-if="stack === 'vue'" class="grid min-h-0 flex-[2] grid-cols-2 gap-4 2xl:grid-cols-4">
+      <div v-if="stack === 'vue'" class="grid min-h-0 flex-1 grid-cols-2 gap-4 2xl:grid-cols-4">
         <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
           <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Routes</h2>
           <div class="min-h-0 flex-1 overflow-auto">
@@ -585,7 +670,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </section>
       </div>
 
-      <!-- generic inventory (config / terraform / android / web / mixed) -->
+        </div>
+        </template>
+      </SplitPane>
+
+      <!-- generic inventory (config / terraform / android / web / mixed) - no graph, fills the view -->
       <div v-if="arch.languages" class="grid min-h-0 flex-1 grid-cols-2 gap-4 2xl:grid-cols-3">
         <section class="flex min-h-0 flex-col rounded-lg border border-edge bg-panel p-4">
           <h2 class="mb-2 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">Languages</h2>

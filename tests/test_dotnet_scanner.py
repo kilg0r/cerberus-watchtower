@@ -43,6 +43,47 @@ public class GetOrdersQuery : IRequest<List<OrderDto>> { }
 public class GetOrdersQueryHandler
     : IRequestHandler<GetOrdersQuery, List<OrderDto>>
 {
+    private readonly IOrderService _orderService;
+
+    public async Task<List<OrderDto>> Handle(GetOrdersQuery request, CancellationToken ct)
+    {
+        return await _orderService.GetOrders();
+    }
+}
+"""
+
+SERVICE_CS = """namespace Demo.App.Services;
+
+public interface IOrderService
+{
+    Task<List<OrderDto>> GetOrders();
+}
+
+public class OrderService : IOrderService
+{
+    private readonly IPricingService _pricing;
+
+    public async Task<List<OrderDto>> GetOrders()
+    {
+        var prices = await _pricing.GetPrices();
+        prices.ToString();
+        return Normalize(prices);
+    }
+
+    private List<OrderDto> Normalize(object prices)
+    {
+        return PriceHelper.Round(prices);
+    }
+}
+
+public interface IPricingService
+{
+    Task<object> GetPrices();
+}
+
+public static class PriceHelper
+{
+    public static List<OrderDto> Round(object prices) => null;
 }
 """
 
@@ -80,6 +121,10 @@ def dotnet_repo(tmp_path: Path) -> Path:
     (repo / "Demo.App" / "Demo.App.csproj").write_text(APP_CSPROJ, encoding="utf-8")
     (repo / "Demo.App" / "Queries" / "GetOrdersQuery.cs").write_text(
         HANDLER_CS, encoding="utf-8"
+    )
+    (repo / "Demo.App" / "Services").mkdir()
+    (repo / "Demo.App" / "Services" / "OrderService.cs").write_text(
+        SERVICE_CS, encoding="utf-8"
     )
     (repo / "Demo.Api" / "Controllers" / "OrdersController.cs").write_text(
         CONTROLLER_CS, encoding="utf-8"
@@ -130,3 +175,34 @@ def test_analyze_maps_endpoints_to_handlers(dotnet_repo: Path):
 
 def test_analyze_returns_none_without_solution(tmp_path: Path):
     assert analyze(tmp_path) is None
+
+
+def test_class_methods_resolve_field_self_and_static_calls(dotnet_repo: Path):
+    result = analyze(dotnet_repo)
+    methods = result["class_methods"]
+
+    get_orders = next(m for m in methods["OrderService"] if m["name"] == "GetOrders")
+    assert {"type": "IPricingService", "method": "GetPrices", "via": "_pricing"} in get_orders["calls"]
+    assert {"type": "OrderService", "method": "Normalize", "via": "this"} in get_orders["calls"]
+    # BCL ceremony (ToString) is filtered out
+    assert not any(c["method"] == "ToString" for c in get_orders["calls"])
+
+    normalize = next(m for m in methods["OrderService"] if m["name"] == "Normalize")
+    assert {"type": "PriceHelper", "method": "Round", "via": None} in normalize["calls"]
+
+    # static helper's own method is indexed too
+    assert [m["name"] for m in methods["PriceHelper"]] == ["Round"]
+
+
+def test_handler_methods_traverse_to_services(dotnet_repo: Path):
+    result = analyze(dotnet_repo)
+    handle = next(
+        m for m in result["class_methods"]["GetOrdersQueryHandler"] if m["name"] == "Handle"
+    )
+    assert handle["calls"] == [
+        {"type": "IOrderService", "method": "GetOrders", "via": "_orderService"}
+    ]
+    assert result["stats"]["methods"] >= 4
+    # interfaces are not method-indexed, implementations resolve the hop
+    assert "IOrderService" not in result["class_methods"]
+    assert result["implementations"]["IOrderService"] == ["OrderService"]

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, inject, ref } from 'vue'
+import MethodNode from './MethodNode.vue'
 
 const props = defineProps({
   typeName: { type: String, required: true },
@@ -22,8 +23,13 @@ const implementations = computed(() =>
   info.value?.kind === 'interface' ? ctx.value.implementations[props.typeName] || [] : []
 )
 
-// for a concrete class: services actually used + injected deps + nested dispatches
+// for a concrete class: own methods (method-level call tree) + services
+// actually used + injected deps + nested dispatches
 function classChildren(className) {
+  const methods = (ctx.value.classMethods[className] || []).map((m) => ({
+    kind: 'method',
+    method: m.name,
+  }))
   const uses = (ctx.value.classServiceUses[className] || []).map((u) => ({
     kind: 'dep',
     type: u.type,
@@ -38,7 +44,7 @@ function classChildren(className) {
     request,
     handler: ctx.value.handlerByRequest[request]?.handler || null,
   }))
-  return [...uses, ...ctorDeps, ...sends]
+  return [...methods, ...uses, ...ctorDeps, ...sends]
 }
 
 const children = computed(() => {
@@ -85,8 +91,15 @@ const badge = computed(() => KIND_BADGES[info.value?.kind] || KIND_BADGES.class)
 
     <div v-if="expanded && children.length" class="ml-4 border-l border-edge/60 pl-2">
       <template v-for="(child, i) in children" :key="i">
+        <!-- own method: drill into its method-level call tree -->
+        <MethodNode
+          v-if="child.kind === 'method'"
+          :type-name="typeName"
+          :method-name="child.method"
+          :trail="[...trail, typeName]"
+        />
         <!-- nested MediatR dispatch: request -> its handler -->
-        <div v-if="child.kind === 'send'" class="py-0.5">
+        <div v-else-if="child.kind === 'send'" class="py-0.5">
           <div class="flex items-center gap-2 px-1.5 text-xs">
             <span class="rounded border border-coral/40 px-1 font-mono text-[10px] text-coral">send</span>
             <span class="font-mono text-slate-300">{{ child.request }}</span>

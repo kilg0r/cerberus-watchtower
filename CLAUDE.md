@@ -20,7 +20,8 @@ cd frontend; npm run build                      # production build -> frontend/d
   - `watchtower/api.py` - all routes; serves `frontend/dist` as SPA when built
   - `watchtower/config.py` - repo registry loaded from `repos.toml` (15 repos)
   - `watchtower/scanners/` - `git_scanner` (review queue), `dotnet_scanner`
-    (.sln/.csproj graph + MediatR flows), `vue_scanner` (component/store graph,
+    (.sln/.csproj graph + MediatR flows + method-level call graph in
+    `class_methods`), `vue_scanner` (component/store graph,
     routes, deps), `python_scanner` (module import graph, deps, endpoints,
     config inventory), `generic_scanner` (fallback inventory),
     `transcript_parser` (Claude Code session history)
@@ -77,4 +78,5 @@ directories / docs inventory) - nothing 501s.
   .cs content in `tests/test_dotnet_scanner.py`) - never depend on real repos.
 - AI calls are always monkeypatched in tests (`run_claude`).
 - After scanner changes, sanity-check against the real thing: payTableDotnet
-  should report ~44 projects / ~263 handlers / ~431 endpoints in ~6s.
+  should report ~44 projects / ~263 handlers / ~431 endpoints / ~3.8k methods
+  in ~8s, with a JSON payload around 1.5 MB.

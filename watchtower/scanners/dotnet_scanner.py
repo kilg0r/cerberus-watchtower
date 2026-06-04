@@ -40,6 +40,22 @@ _FIELD_DECL_RE = re.compile(r"([\w?]+(?:<[^;={]*?>)?\??)\s+(_\w+)\s*(?:;|=>|=)")
 _FIELD_USE_RE = re.compile(r"(_\w+)\s*\.")
 _GET_SERVICE_RE = re.compile(r"Get(?:Required)?Service<\s*(\w+)")
 _FIELD_TYPE_NOISE = {"var", "return", "await", "new", "string", "int", "bool", "object"}
+_METHOD_DECL_RE = re.compile(
+    r"^[ \t]*"
+    r"(?:(?:public|private|protected|internal|static|async|virtual|override|sealed|partial|extern|unsafe|new)\s+)+"
+    r"(?!class\b|record\b|interface\b|struct\b|enum\b|event\b|delegate\b|operator\b)"
+    r"([\w?]+(?:<[^;{}=]*?>)?(?:\[\])?\??)\s+(\w+)\s*(?:<[^>\n]*>)?\s*\(",
+    re.MULTILINE,
+)
+_FIELD_CALL_RE = re.compile(r"(_\w+)\.(\w+)\s*(?:<[^>\n]*>)?\s*\(")
+_TYPE_CALL_RE = re.compile(r"(?<![\w.<])([A-Z]\w*)\.(\w+)\s*(?:<[^>\n]*>)?\s*\(")
+_BARE_CALL_RE = re.compile(r"(?<![\w.<])([A-Z]\w*)\s*(?:<[^>\n]*>)?\s*\(")
+_THIS_CALL_RE = re.compile(r"\bthis\.(\w+)\s*(?:<[^>\n]*>)?\s*\(")
+# method names that are plumbing, not flow (BCL ceremony on any object)
+_CALL_NOISE = {
+    "ToString", "Equals", "GetHashCode", "GetType", "Dispose", "DisposeAsync",
+    "ConfigureAwait", "ContinueWith", "CompareTo",
+}
 
 
 def _cs_files(root: Path):
@@ -114,6 +130,44 @@ def _parse_params(params: str) -> list[dict]:
     return deps
 
 
+def _extract_methods(class_name: str, body: str, body_offset: int, content: str) -> list[dict]:
+    """Heuristic method index for one class body: declared methods plus the raw
+    call sites inside each method (field calls, Type.Static calls, self calls,
+    MediatR sends). Resolution against the global type index happens later."""
+    decls = list(_METHOD_DECL_RE.finditer(body))
+    own_names = {d.group(2) for d in decls} - {class_name}
+    methods = []
+    for index, decl in enumerate(decls):
+        segment_end = decls[index + 1].start() if index + 1 < len(decls) else len(body)
+        segment = body[decl.end() : segment_end]
+        field_calls = dict.fromkeys(
+            (field, meth)
+            for field, meth in _FIELD_CALL_RE.findall(segment)
+            if meth not in _CALL_NOISE
+        )
+        type_calls = dict.fromkeys(
+            (type_name, meth)
+            for type_name, meth in _TYPE_CALL_RE.findall(segment)
+            if meth not in _CALL_NOISE
+        )
+        self_calls = dict.fromkeys(
+            name
+            for name in _BARE_CALL_RE.findall(segment) + _THIS_CALL_RE.findall(segment)
+            if name in own_names
+        )
+        methods.append(
+            {
+                "name": decl.group(2),
+                "line": content.count("\n", 0, body_offset + decl.start()) + 1,
+                "field_calls": list(field_calls),
+                "type_calls": list(type_calls),
+                "self_calls": list(self_calls),
+                "sends": list(dict.fromkeys(_SEND_RE.findall(segment))),
+            }
+        )
+    return methods
+
+
 def _extract_types(
     project_name: str,
     project_dir: Path,
@@ -122,10 +176,12 @@ def _extract_types(
     base_lists: dict,
     class_fields: dict,
     class_uses: dict,
+    class_methods_raw: dict,
 ) -> None:
     """Index every class/interface/record: declaring project, constructor-injected
     dependencies (classic + C# primary constructors), base/interface list, field
-    declarations (_name -> type), and field/GetService usages in the body."""
+    declarations (_name -> type), field/GetService usages, and per-method call
+    sites in the body."""
     for cs in _cs_files(project_dir):
         content = _read(cs)
         decls = list(_TYPE_DECL_RE.finditer(content))
@@ -200,6 +256,10 @@ def _extract_types(
                 services = list(dict.fromkeys(_GET_SERVICE_RE.findall(body)))
                 if uses or services:
                     class_uses[name] = {"fields": uses, "services": services}
+                # per-method call sites (resolved later in analyze)
+                methods = _extract_methods(name, body, decl.start(), content)
+                if methods:
+                    class_methods_raw[name] = methods
 
 
 def parse_solution(repo_path: Path) -> dict | None:
@@ -336,6 +396,7 @@ def analyze(repo_path: Path) -> dict | None:
 
     nodes, edges, handlers, endpoints, dispatch_sites = [], [], [], [], []
     types, class_deps, base_lists, class_fields, class_uses = {}, {}, {}, {}, {}
+    class_methods_raw: dict[str, list[dict]] = {}
     known = {p["name"] for p in solution["projects"]}
 
     for project in solution["projects"]:
@@ -352,7 +413,7 @@ def analyze(repo_path: Path) -> dict | None:
             if not is_test:  # type/dependency index skips test projects
                 _extract_types(
                     project["name"], project_dir, types, class_deps,
-                    base_lists, class_fields, class_uses,
+                    base_lists, class_fields, class_uses, class_methods_raw,
                 )
             file_count = sum(1 for _ in _cs_files(project_dir))
         else:
@@ -430,6 +491,39 @@ def analyze(repo_path: Path) -> dict | None:
                 r for r in resolved if not (r["type"] in seen or seen.add(r["type"]))
             ]
 
+    # class -> declared methods with calls resolved against the type index:
+    # field calls through the inheritance chain, Type.Static calls, self calls.
+    # This is the method-level call graph that powers full-codebase traversal.
+    class_methods: dict[str, list[dict]] = {}
+    for class_name, methods in class_methods_raw.items():
+        fields = _inherited_fields(class_name)
+        resolved_methods = []
+        for method in methods:
+            calls = []
+            for field, meth in method["field_calls"]:
+                type_name = fields.get(field)
+                if type_name and type_name in types:
+                    calls.append({"type": type_name, "method": meth, "via": field})
+            for type_name, meth in method["type_calls"]:
+                if type_name in types and type_name != class_name:
+                    calls.append({"type": type_name, "method": meth, "via": None})
+            for meth in method["self_calls"]:
+                calls.append({"type": class_name, "method": meth, "via": "this"})
+            seen = set()
+            calls = [
+                c for c in calls
+                if not ((c["type"], c["method"]) in seen or seen.add((c["type"], c["method"])))
+            ]
+            resolved_methods.append(
+                {
+                    "name": method["name"],
+                    "line": method["line"],
+                    "calls": calls,
+                    "sends": method["sends"],
+                }
+            )
+        class_methods[class_name] = resolved_methods
+
     return {
         "stack": "dotnet",
         "solution": solution["sln"],
@@ -443,12 +537,14 @@ def analyze(repo_path: Path) -> dict | None:
         "implementations": implementations,
         "class_sends": class_sends,
         "class_service_uses": class_service_uses,
+        "class_methods": class_methods,
         "stats": {
             "projects": len(nodes),
             "test_projects": sum(1 for n in nodes if n["is_test"]),
             "project_refs": len(edges),
             "handlers": len(handlers),
             "endpoints": len(endpoints),
+            "methods": sum(len(m) for m in class_methods.values()),
             "packages": len({p["name"] for n in nodes for p in n["packages"]}),
         },
     }

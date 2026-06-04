@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { apiFetch, usePolling } from '../composables/useApi'
 import { useEventStream } from '../composables/useEventStream'
 import SessionCard from '../components/SessionCard.vue'
+import SplitPane from '../components/SplitPane.vue'
 
 const sessions = ref(null)
 const backendDown = ref(false)
@@ -66,9 +67,10 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
       Backend not running on :8765
     </div>
 
-    <div class="grid min-h-0 flex-1 gap-6 lg:grid-cols-[1fr_380px]">
+    <SplitPane direction="horizontal" storage-key="activity" :initial="0.7" class="min-h-0 flex-1">
+      <template #first>
       <!-- sessions -->
-      <section class="flex min-h-0 flex-col">
+      <section class="flex h-full min-h-0 flex-col pr-3">
         <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
           Recent sessions
         </h2>
@@ -82,9 +84,11 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
           <SessionCard v-for="session in sessions" :key="session.session_id" :session="session" />
         </div>
       </section>
+      </template>
 
+      <template #second>
       <!-- live feed -->
-      <section class="flex min-h-0 flex-col">
+      <section class="flex h-full min-h-0 flex-col pl-3">
         <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
           Live feed
         </h2>
@@ -108,6 +112,7 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
           </div>
         </div>
       </section>
-    </div>
+      </template>
+    </SplitPane>
   </div>
 </template>

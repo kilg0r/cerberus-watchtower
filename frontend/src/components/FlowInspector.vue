@@ -1,16 +1,37 @@
 <script setup>
 import FlowNode from './FlowNode.vue'
+import { useEdgeResize } from '../composables/useEdgeResize'
 
 defineProps({
   endpoint: { type: Object, required: true },
 })
 defineEmits(['close'])
+
+// drag the drawer's left edge to widen deep call trees
+const drawer = useEdgeResize('flow-inspector', {
+  initial: 680,
+  min: 480,
+  max: Math.min(1400, window.innerWidth - 120),
+  edge: 'left',
+})
 </script>
 
 <template>
   <div class="fixed inset-0 z-40 flex justify-end">
     <div class="absolute inset-0 bg-navy/70 backdrop-blur-sm" @click="$emit('close')" />
-    <aside class="relative z-50 flex h-full w-[680px] flex-col border-l border-edge bg-panel shadow-2xl">
+    <aside
+      class="relative z-50 flex h-full max-w-[calc(100vw-48px)] flex-col border-l border-edge bg-panel shadow-2xl"
+      :style="{ width: drawer.size.value + 'px' }"
+    >
+      <div
+        class="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize transition-colors hover:bg-coral/40"
+        :class="drawer.dragging.value ? 'bg-coral/60' : ''"
+        title="drag to resize - double-click to reset"
+        @pointerdown="drawer.onPointerDown"
+        @pointermove="drawer.onPointerMove"
+        @pointerup="drawer.onPointerUp"
+        @dblclick="drawer.reset"
+      />
       <header class="flex items-start justify-between border-b border-edge px-5 py-4">
         <div class="min-w-0">
           <p class="text-[10px] font-semibold uppercase tracking-widest text-slate-500">Call flow</p>

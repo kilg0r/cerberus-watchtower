@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { apiFetch, usePolling } from '../composables/useApi'
+import SplitPane from '../components/SplitPane.vue'
 
 const data = ref(null)
 const backendDown = ref(false)
@@ -87,9 +88,10 @@ function uptime(seconds) {
         </span>
       </div>
 
-      <div class="grid min-h-0 flex-1 gap-6 xl:grid-cols-[1fr_420px]">
+      <SplitPane direction="horizontal" storage-key="ports" :initial="0.68" class="min-h-0 flex-1">
+        <template #first>
         <!-- listeners -->
-        <section class="flex min-h-0 flex-col">
+        <section class="flex h-full min-h-0 flex-col pr-3">
           <div class="mb-3 flex shrink-0 flex-wrap items-center gap-3">
             <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Listening</h2>
             <input
@@ -153,9 +155,11 @@ function uptime(seconds) {
             </table>
           </div>
         </section>
+        </template>
 
+        <template #second>
         <!-- active connections -->
-        <section class="flex min-h-0 flex-col">
+        <section class="flex h-full min-h-0 flex-col pl-3">
           <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
             Active connections - by process &amp; remote
           </h2>
@@ -178,7 +182,8 @@ function uptime(seconds) {
             <p v-if="!talkers.length" class="py-4 text-center text-xs text-slate-500">no established connections</p>
           </div>
         </section>
-      </div>
+        </template>
+      </SplitPane>
     </div>
   </div>
 </template>
