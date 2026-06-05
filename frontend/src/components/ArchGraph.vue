@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import cytoscape from 'cytoscape'
 import dagre from 'cytoscape-dagre'
 
@@ -27,6 +27,9 @@ const FOLDER_COLORS = {
   infrastructure: '#fbbf24',
   tests: '#64748b',
 }
+// colors handed out to solution folders beyond the canonical four, assigned
+// in sorted order so a given folder name keeps its color across rescans
+const EXTRA_FOLDER_PALETTE = ['#f472b6', '#22d3ee', '#a3e635', '#fb923c', '#e879f9', '#2dd4bf']
 const KIND_COLORS = {
   view: '#38bdf8',
   component: '#a78bfa',
@@ -44,8 +47,31 @@ const DEFAULT_LEGEND = [
   { label: 'other', color: '#a78bfa' },
 ]
 
+const folderColors = computed(() => {
+  const map = { ...FOLDER_COLORS }
+  const extras = [...new Set(props.nodes.map((n) => n.folder).filter((f) => f && !(f in map)))].sort()
+  extras.forEach((f, i) => {
+    map[f] = EXTRA_FOLDER_PALETTE[i % EXTRA_FOLDER_PALETTE.length]
+  })
+  return map
+})
+
+// legend derived from the folders actually present; 'other' only when some
+// node has no solution folder at all
+const computedLegend = computed(() => {
+  if (props.legend) return props.legend
+  const present = new Set(props.nodes.map((n) => n.folder).filter(Boolean))
+  if (!present.size) return DEFAULT_LEGEND
+  const items = Object.entries(folderColors.value)
+    .filter(([label]) => present.has(label))
+    .map(([label, color]) => ({ label, color }))
+  if (props.nodes.some((n) => !n.folder)) items.push({ label: 'other', color: DEFAULT_COLOR })
+  return items
+})
+
 function nodeColor(n) {
-  return FOLDER_COLORS[n.folder] || KIND_COLORS[n.kind] || DEFAULT_COLOR
+  if (n.folder) return folderColors.value[n.folder]
+  return KIND_COLORS[n.kind] || DEFAULT_COLOR
 }
 
 const MODES = {
@@ -168,7 +194,7 @@ onBeforeUnmount(() => {
   <div class="relative h-full">
     <div ref="container" class="w-full rounded-lg border border-edge bg-navy/60" :class="heightClass" />
     <div class="absolute bottom-3 left-3 flex gap-3 rounded-md border border-edge bg-panel/90 px-3 py-1.5 text-[10px] text-slate-400">
-      <span v-for="item in legend || DEFAULT_LEGEND" :key="item.label">
+      <span v-for="item in computedLegend" :key="item.label">
         <span class="mr-1 inline-block h-2 w-2 rounded-sm" :style="{ backgroundColor: item.color }" />{{ item.label }}
       </span>
       <span class="text-slate-500">double-click a node to focus</span>
