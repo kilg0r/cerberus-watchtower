@@ -52,22 +52,58 @@ const topTools = computed(() =>
     .slice(0, 6)
 )
 
+// state-driven presentation; waiting/done are the "needs attention" states
+const STATES = {
+  working: { dot: 'animate-pulse bg-emerald-400', label: null, badge: null },
+  waiting: {
+    dot: 'animate-pulse bg-amber-400',
+    label: 'waiting',
+    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-300',
+    badgeText: 'needs input',
+  },
+  done: {
+    dot: 'bg-sky-400',
+    label: 'finished',
+    badge: 'border-sky-500/40 bg-sky-500/10 text-sky-300',
+    badgeText: 'finished',
+  },
+  idle: { dot: 'bg-slate-600', label: null, badge: null },
+}
+const stateMeta = computed(() => STATES[props.session.state] || STATES.idle)
+const needsAttention = computed(() => ['waiting', 'done'].includes(props.session.state))
+
 const shortName = (path) => path.split(/[\\/]/).pop()
 </script>
 
 <template>
-  <article class="rounded-lg border border-edge bg-panel p-4">
+  <article
+    class="rounded-lg border bg-panel p-4"
+    :class="needsAttention ? 'border-amber-500/30' : 'border-edge'"
+  >
     <header class="flex items-center gap-2.5">
-      <span
-        class="h-2 w-2 shrink-0 rounded-full"
-        :class="session.active ? 'animate-pulse bg-emerald-400' : 'bg-slate-600'"
-      />
+      <span class="h-2 w-2 shrink-0 rounded-full" :class="stateMeta.dot" />
       <h3 class="text-sm font-semibold text-white">{{ session.project }}</h3>
       <span class="font-mono text-[10px] text-slate-600">{{ session.session_id.slice(0, 8) }}</span>
+      <span
+        v-if="stateMeta.badge"
+        class="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+        :class="stateMeta.badge"
+      >
+        {{ stateMeta.badgeText }}
+      </span>
       <span class="ml-auto text-xs text-slate-500">
-        {{ session.active ? 'active now' : relative(session.last_activity) }} &middot; {{ duration }}
+        {{ session.active ? 'active now' : stateMeta.label || relative(session.last_activity) }}
+        &middot; {{ duration }}
       </span>
     </header>
+
+    <p
+      v-if="session.title"
+      class="mt-1.5 truncate text-xs font-medium text-slate-300"
+      :title="session.title"
+    >
+      {{ session.title }}
+    </p>
 
     <p v-if="session.last_prompt" class="mt-2 truncate text-xs italic text-slate-500" :title="session.last_prompt">
       &ldquo;{{ session.last_prompt }}&rdquo;

@@ -41,8 +41,17 @@ def parse_transcript(path: Path) -> dict | None:
     tool_counts: dict[str, int] = {}
     files_edited: list[str] = []
     last_prompt = None
+    title = None
 
     for line in content.splitlines():
+        # the terminal tab title - an "ai-title" record with no timestamp,
+        # rewritten as the session evolves, so the last one wins
+        if '"aiTitle"' in line:
+            record = _safe_loads(line)
+            if record and record.get("aiTitle"):
+                title = record["aiTitle"]
+            continue
+
         if first_ts is None or cwd is None or '"timestamp"' in line:
             record = _safe_loads(line) if ('"timestamp"' in line or cwd is None) else None
             if record:
@@ -73,6 +82,7 @@ def parse_transcript(path: Path) -> dict | None:
     return {
         "session_id": path.stem,
         "cwd": cwd,
+        "title": title,
         "started_at": first_ts,
         "last_activity": last_ts,
         "tool_counts": tool_counts,

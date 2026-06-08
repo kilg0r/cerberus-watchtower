@@ -111,26 +111,50 @@ def _project_label(cwd: str | None) -> dict:
     return {"project": cwd.replace("/", "\\").rstrip("\\").rsplit("\\", 1)[-1], "repo_id": None}
 
 
+# A session's live state is inferred from its most recent hook event:
+#   Notification -> blocked on a permission/input prompt  ("waiting")
+#   Stop         -> turn finished, awaiting the next prompt ("done")
+#   tool/prompt  -> mid-flight                              ("working")
+# "waiting"/"done" are the states that need the user's attention, so they stay
+# relevant for a while; "working" requires very recent activity to count as live.
+_LIVE_WINDOW = timedelta(minutes=5)        # working pulse
+_WAITING_WINDOW = timedelta(hours=8)       # blocked sessions matter for a long time
+_DONE_WINDOW = timedelta(hours=2)          # finished-but-recent, awaiting your input
+_WORKING_EVENTS = {"UserPromptSubmit", "PostToolUse", "SubagentStop", "SessionStart"}
+
+
 @app.get("/api/activity")
 async def activity() -> dict:
     sessions = await asyncio.to_thread(transcript_parser.recent_sessions)
     recent = events.read_recent_events(limit=100)
 
-    # sessions whose last hook event is Stop are done; recent activity = live
-    stopped = {
-        e["session_id"]
-        for e in recent
-        if e.get("event") == "Stop" and e.get("session_id")
-    }
+    # recent is newest-first, so the first event seen per session is its latest
+    latest_event: dict[str, str] = {}
+    for e in recent:
+        sid = e.get("session_id")
+        if sid and sid not in latest_event:
+            latest_event[sid] = e.get("event")
     now = datetime.now(timezone.utc)
     for session in sessions:
         session.update(_project_label(session.get("cwd")))
         try:
             last = datetime.fromisoformat(session["last_activity"].replace("Z", "+00:00"))
-            fresh = now - last < timedelta(minutes=5)
+            age = now - last
         except (ValueError, AttributeError, TypeError):
-            fresh = False
-        session["active"] = fresh and session["session_id"] not in stopped
+            age = None
+        name = latest_event.get(session["session_id"])
+        if age is None:
+            state = "idle"
+        elif name == "Notification" and age < _WAITING_WINDOW:
+            state = "waiting"
+        elif name == "Stop" and age < _DONE_WINDOW:
+            state = "done"
+        elif name in _WORKING_EVENTS and age < _LIVE_WINDOW:
+            state = "working"
+        else:
+            state = "idle"
+        session["state"] = state
+        session["active"] = state == "working"  # back-compat alias
     for event in recent:
         event.update(_project_label(event.get("cwd")))
     return {"sessions": sessions, "events": recent}

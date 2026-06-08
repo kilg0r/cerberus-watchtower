@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { apiFetch, usePolling } from '../composables/useApi'
 import { useEventStream } from '../composables/useEventStream'
 import SessionCard from '../components/SessionCard.vue'
@@ -11,10 +11,16 @@ const { liveEvents, connected } = useEventStream()
 
 const EVENT_LABELS = {
   SessionStart: { label: 'session started', class: 'text-emerald-400' },
-  Stop: { label: 'session done', class: 'text-slate-400' },
+  UserPromptSubmit: { label: 'prompt sent', class: 'text-sky-400' },
+  Stop: { label: 'turn finished', class: 'text-sky-400' },
+  Notification: { label: 'needs input', class: 'text-amber-400' },
   SubagentStop: { label: 'agent finished', class: 'text-violet-400' },
   PostToolUse: { label: 'edited', class: 'text-amber-400' },
 }
+
+const attentionCount = computed(
+  () => (sessions.value || []).filter((s) => s.state === 'waiting' || s.state === 'done').length
+)
 
 async function refresh() {
   try {
@@ -51,13 +57,21 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
         <h1 class="text-xl font-semibold text-white">Activity</h1>
         <p class="mt-1 text-sm text-slate-500">Agent sessions and live tool activity</p>
       </div>
-      <p class="flex items-center gap-2 text-xs text-slate-500">
+      <div class="flex items-center gap-4">
         <span
-          class="h-2 w-2 rounded-full"
-          :class="connected ? 'animate-pulse bg-emerald-400' : 'bg-red-400'"
-        />
-        {{ connected ? 'live' : 'stream offline' }}
-      </p>
+          v-if="attentionCount"
+          class="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-300"
+        >
+          {{ attentionCount }} need{{ attentionCount === 1 ? 's' : '' }} attention
+        </span>
+        <p class="flex items-center gap-2 text-xs text-slate-500">
+          <span
+            class="h-2 w-2 rounded-full"
+            :class="connected ? 'animate-pulse bg-emerald-400' : 'bg-red-400'"
+          />
+          {{ connected ? 'live' : 'stream offline' }}
+        </p>
+      </div>
     </header>
 
     <div
