@@ -175,6 +175,18 @@ def _diff_payloads(old: dict, new: dict) -> dict:
     return changes
 
 
+def diff_arch(old_arch: dict | None, new_arch: dict) -> dict:
+    """Structural diff between two full architecture payloads (the shape the
+    scanners return), reusing the same signature + diff engine as drift.
+
+    `old_arch=None` (e.g. the parent of a root commit, which has no tree) yields
+    an empty baseline, so everything in `new_arch` reads as added.
+    """
+    old_payload = snapshot_signature(old_arch)[1] if old_arch else {}
+    new_payload = snapshot_signature(new_arch)[1]
+    return _diff_payloads(old_payload, new_payload)
+
+
 def compute_drift(session: Session, repo_id: str) -> dict:
     """Diff the two most recent snapshots for a repo."""
     rows = (

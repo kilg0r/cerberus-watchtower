@@ -51,6 +51,21 @@ class SessionSummaryCache(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime)
 
 
+class CommitArchCache(Base):
+    """Full architecture scan of a repo's tree as it stood at a specific commit.
+    A commit's tree is immutable, so this is cached once per (repo, sha) and
+    never invalidated - it backs the bundle architectural-delta drill-through."""
+
+    __tablename__ = "commit_arch_cache"
+    __table_args__ = (UniqueConstraint("repo_id", "commit_sha"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo_id: Mapped[str] = mapped_column(String(64), index=True)
+    commit_sha: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[str] = mapped_column(Text)  # JSON: full architecture payload
+    generated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
 class SummaryCache(Base):
     """AI diff summaries, keyed by repo + diff content hash so a summary is
     only regenerated when the pending changes actually change."""

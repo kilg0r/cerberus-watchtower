@@ -1,6 +1,7 @@
 """Cerberus Watchtower API - serves the dashboard on 127.0.0.1:8765."""
 
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -11,14 +12,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from . import config, drift, events, notifier, system_ports
 from .ai import narrator, summarizer
 from .db import get_session_factory
-from .scanners import (
-    dotnet_scanner,
-    generic_scanner,
-    git_scanner,
-    python_scanner,
-    transcript_parser,
-    vue_scanner,
-)
+from .scanners import git_scanner, scan_architecture, transcript_parser
+from .scanners import arch_at_commit, git_history
 
 # last successful architecture scan per repo - feeds narrate without rescanning
 _arch_cache: dict[str, dict] = {}
@@ -179,6 +174,35 @@ async def summarize_session(session_id: str) -> dict:
         raise HTTPException(502, str(exc)) from exc
 
 
+@app.get("/api/activity/{session_id}/commits")
+async def session_commits(session_id: str) -> dict:
+    """Commits attributable to a session - authored inside its active window,
+    flagged 'files' when they also touch a file the session edited."""
+    path = transcript_parser.find_transcript(session_id)
+    if path is None:
+        raise HTTPException(404, f"unknown session: {session_id}")
+    info = await asyncio.to_thread(transcript_parser.parse_transcript, path)
+    if info is None:
+        raise HTTPException(404, "could not parse session transcript")
+    label = _project_label(info.get("cwd"))
+    repo = config.repo_by_id(label["repo_id"]) if label.get("repo_id") else None
+    if repo is None:
+        return {
+            "repo_id": None,
+            "project": label.get("project"),
+            "commits": [],
+            "reason": "session working directory is not a registered repo",
+        }
+    commits = await asyncio.to_thread(
+        git_history.commits_for_session,
+        repo.path,
+        info.get("started_at"),
+        info.get("last_activity"),
+        info.get("files_edited"),
+    )
+    return {"repo_id": repo.id, "project": repo.name, "commits": commits}
+
+
 @app.get("/api/ports")
 async def ports() -> dict:
     return await asyncio.to_thread(system_ports.snapshot)
@@ -193,27 +217,12 @@ async def event_stream() -> StreamingResponse:
     )
 
 
-_ARCHITECTURE_SCANNERS = {
-    "dotnet": dotnet_scanner.analyze,
-    "vue": vue_scanner.analyze,
-    "python": python_scanner.analyze,
-}
-
-
-def _scan_architecture(repo: config.RepoConfig) -> dict | None:
-    scanner = _ARCHITECTURE_SCANNERS.get(repo.stack)
-    result = scanner(repo.path) if scanner else None
-    if result is None:  # no dedicated scanner, or it found nothing analyzable
-        result = generic_scanner.analyze(repo.path, stack=repo.stack)
-    return result
-
-
 @app.get("/api/architecture-overview")
 async def architecture_overview() -> list[dict]:
     """Stats-level scan of every registered repo, concurrently."""
     repos = [r for r in config.registry() if r.path.is_dir()]
     results = await asyncio.gather(
-        *(asyncio.to_thread(_scan_architecture, repo) for repo in repos)
+        *(asyncio.to_thread(scan_architecture, repo) for repo in repos)
     )
     overview = []
     with get_session_factory()() as session:
@@ -240,7 +249,7 @@ async def architecture(repo_id: str) -> dict:
     repo = config.repo_by_id(repo_id)
     if repo is None:
         raise HTTPException(404, f"unknown repo: {repo_id}")
-    result = await asyncio.to_thread(_scan_architecture, repo)
+    result = await asyncio.to_thread(scan_architecture, repo)
     if result is None:
         raise HTTPException(404, f"nothing analyzable found in {repo.id}")
     _arch_cache[repo.id] = result
@@ -280,6 +289,193 @@ async def architecture_narrate(repo_id: str, node_id: str) -> dict:
 
     try:
         return await asyncio.to_thread(_narrate)
+    except summarizer.SummarizerError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+# ============================== git history ==============================
+# Universal/per-repo commit history, single-commit detail, and "bundle" review
+# (a contiguous range or an arbitrary cherry-picked set) with a combined diff
+# and an architectural delta drilled the same way as the Architecture view.
+
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
+
+
+def _require_repo(repo_id: str) -> config.RepoConfig:
+    repo = config.repo_by_id(repo_id)
+    if repo is None:
+        raise HTTPException(404, f"unknown repo: {repo_id}")
+    return repo
+
+
+def _validate_sha(sha: str) -> str:
+    if not _SHA_RE.match(sha or ""):
+        raise HTTPException(400, f"invalid commit sha: {sha}")
+    return sha
+
+
+def _parse_shas(shas: str | None) -> list[str]:
+    out = [s for s in (shas or "").split(",") if s]
+    if not out:
+        raise HTTPException(400, "no commits specified")
+    for sha in out:
+        _validate_sha(sha)
+    return out
+
+
+def _bundle_endpoints(
+    mode: str, base: str | None, head: str | None, shas: str | None
+) -> tuple[str | None, str | None, list[str] | None]:
+    """Validate a bundle spec and return (base, head, sha_list). For 'set',
+    base/head are None (resolved later via git); for 'range', sha_list is None."""
+    if mode == "range":
+        if not base or not head:
+            raise HTTPException(400, "a range bundle needs base and head")
+        return _validate_sha(base), _validate_sha(head), None
+    if mode == "set":
+        return None, None, _parse_shas(shas)
+    raise HTTPException(400, f"unknown bundle mode: {mode}")
+
+
+@app.get("/api/git/history")
+async def git_history_feed(limit: int = 50) -> list[dict]:
+    repos = [r for r in config.registry() if r.path.is_dir()]
+    return await asyncio.to_thread(git_history.history_all, repos, limit)
+
+
+@app.get("/api/git/{repo_id}/commits")
+async def git_commits(
+    repo_id: str,
+    limit: int = 50,
+    skip: int = 0,
+    since: str | None = None,
+    author: str | None = None,
+    path: str | None = None,
+) -> list[dict]:
+    repo = _require_repo(repo_id)
+    paths = [path] if path else None
+    return await asyncio.to_thread(
+        lambda: git_history.list_commits(
+            repo.path, limit=limit, skip=skip, since=since, author=author, paths=paths
+        )
+    )
+
+
+@app.get("/api/git/{repo_id}/commit/{sha}")
+async def git_commit_detail(repo_id: str, sha: str) -> dict:
+    repo = _require_repo(repo_id)
+    _validate_sha(sha)
+    detail = await asyncio.to_thread(git_history.commit_detail, repo.path, sha)
+    if detail is None:
+        raise HTTPException(404, f"unknown commit: {sha}")
+    return detail
+
+
+@app.get("/api/git/{repo_id}/commit/{sha}/diff")
+async def git_commit_diff(repo_id: str, sha: str, path: str | None = None) -> dict:
+    repo = _require_repo(repo_id)
+    _validate_sha(sha)
+    diff = await asyncio.to_thread(git_history.commit_diff, repo.path, sha, path)
+    return {"diff": diff}
+
+
+@app.get("/api/git/{repo_id}/bundle")
+async def git_bundle(
+    repo_id: str,
+    mode: str = "range",
+    base: str | None = None,
+    head: str | None = None,
+    shas: str | None = None,
+) -> dict:
+    repo = _require_repo(repo_id)
+    base, head, sha_list = _bundle_endpoints(mode, base, head, shas)
+    if mode == "range":
+        result = await asyncio.to_thread(git_history.range_files, repo.path, base, head)
+    else:
+        result = await asyncio.to_thread(git_history.set_files, repo.path, sha_list)
+    return {"mode": mode, **result}
+
+
+@app.get("/api/git/{repo_id}/bundle/diff")
+async def git_bundle_diff(
+    repo_id: str,
+    mode: str = "range",
+    base: str | None = None,
+    head: str | None = None,
+    shas: str | None = None,
+    path: str | None = None,
+) -> dict:
+    repo = _require_repo(repo_id)
+    base, head, sha_list = _bundle_endpoints(mode, base, head, shas)
+    if mode == "range":
+        diff = await asyncio.to_thread(git_history.range_diff, repo.path, base, head, path)
+    else:
+        diff = await asyncio.to_thread(git_history.set_diff, repo.path, sha_list, path)
+    return {"diff": diff}
+
+
+@app.get("/api/git/{repo_id}/bundle/arch-delta")
+async def git_bundle_arch_delta(
+    repo_id: str,
+    mode: str = "range",
+    base: str | None = None,
+    head: str | None = None,
+    shas: str | None = None,
+) -> dict:
+    """Structural delta across the bundle: scan the architecture at the bundle's
+    base parent and at its head, then diff. `head_arch` is the full payload so the
+    frontend can drill the call graph exactly like the live Architecture view."""
+    repo = _require_repo(repo_id)
+    base, head, sha_list = _bundle_endpoints(mode, base, head, shas)
+
+    def _compute() -> dict:
+        if mode == "range":
+            base_parent, head_sha = git_history.base_parent(repo.path, base), head
+        else:
+            base_parent, head_sha = git_history.order_endpoints(repo.path, sha_list)
+        if head_sha is None:
+            return {"changes": None, "head_arch": None, "base_available": False}
+        new_arch = arch_at_commit.arch_at_commit(repo, head_sha)
+        if new_arch is None:
+            # tree exists but isn't analyzable for this stack - no graph to drill
+            return {"changes": None, "head_arch": None, "base_available": False, "unsupported": True}
+        old_arch = arch_at_commit.arch_at_commit(repo, base_parent) if base_parent else None
+        return {
+            "changes": drift.diff_arch(old_arch, new_arch),
+            "head_arch": new_arch,
+            "base_available": old_arch is not None,
+        }
+
+    return await asyncio.to_thread(_compute)
+
+
+@app.post("/api/git/{repo_id}/bundle/summarize")
+async def git_bundle_summarize(
+    repo_id: str,
+    mode: str = "range",
+    base: str | None = None,
+    head: str | None = None,
+    shas: str | None = None,
+) -> dict:
+    repo = _require_repo(repo_id)
+    base, head, sha_list = _bundle_endpoints(mode, base, head, shas)
+    if mode == "range":
+        diff = await asyncio.to_thread(git_history.range_diff, repo.path, base, head)
+    else:
+        diff = await asyncio.to_thread(git_history.set_diff, repo.path, sha_list)
+    if not diff.strip():
+        raise HTTPException(404, "no changes to summarize")
+    encoded = diff.encode("utf-8")
+    if len(encoded) > summarizer.MAX_DIFF_BYTES:
+        diff = encoded[: summarizer.MAX_DIFF_BYTES].decode("utf-8", errors="replace")
+        diff += "\n\n[diff truncated - summarize what is visible]"
+
+    def _summarize() -> dict:
+        with get_session_factory()() as session:
+            return summarizer.get_or_create_summary(session, repo_id, diff)
+
+    try:
+        return await asyncio.to_thread(_summarize)
     except summarizer.SummarizerError as exc:
         raise HTTPException(502, str(exc)) from exc
 

@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiFetch } from '../composables/useApi'
+import { provideArchContext } from '../composables/useArchContext'
 import { useEdgeResize } from '../composables/useEdgeResize'
 import ArchGraph from '../components/ArchGraph.vue'
 import DataFlowTable from '../components/DataFlowTable.vue'
@@ -50,40 +51,7 @@ const narrating = ref(false)
 const cache = new Map()
 
 // shared lookup context for FlowNode/MethodNode drilling (dotnet only)
-provide(
-  'archCtx',
-  computed(() => {
-    const implementations = arch.value?.implementations || {}
-    const classMethods = arch.value?.class_methods || {}
-    // reverse method-call index: "Type.method" -> callers. Calls to an
-    // interface count for the interface and every implementation, so the
-    // "called from outside" view works from either side.
-    const callersOf = {}
-    for (const [cls, methods] of Object.entries(classMethods)) {
-      for (const method of methods) {
-        for (const call of method.calls || []) {
-          if (call.type === cls) continue // self calls aren't cross-references
-          for (const target of [call.type, ...(implementations[call.type] || [])]) {
-            const key = `${target}.${call.method}`
-            ;(callersOf[key] ||= []).push({ class: cls, method: method.name })
-          }
-        }
-      }
-    }
-    return {
-      types: arch.value?.types || {},
-      classDeps: arch.value?.class_deps || {},
-      implementations,
-      classSends: arch.value?.class_sends || {},
-      classServiceUses: arch.value?.class_service_uses || {},
-      classMethods,
-      callersOf,
-      handlerByRequest: Object.fromEntries(
-        (arch.value?.handlers || []).map((h) => [h.request, h])
-      ),
-    }
-  })
-)
+provideArchContext(arch)
 
 const isOverview = computed(() => selectedId.value === ALL)
 const hasGraph = computed(() => Boolean(arch.value?.graph?.nodes?.length))

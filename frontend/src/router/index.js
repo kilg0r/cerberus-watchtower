@@ -13,6 +13,12 @@ const routes = [
     component: () => import('../views/ArchitectureView.vue'),
   },
   {
+    path: '/history',
+    name: 'history',
+    // lazy: the bundle review pulls in cytoscape for the arch-delta drill-through
+    component: () => import('../views/GitHistoryView.vue'),
+  },
+  {
     path: '/ports',
     name: 'ports',
     component: () => import('../views/PortsView.vue'),

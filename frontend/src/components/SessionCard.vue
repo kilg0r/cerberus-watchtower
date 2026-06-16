@@ -1,15 +1,39 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { apiFetch } from '../composables/useApi'
 
 const props = defineProps({
   session: { type: Object, required: true },
 })
 
+const router = useRouter()
 const showFiles = ref(false)
 const summary = ref(null)
 const summarizing = ref(false)
 const summaryError = ref(null)
+const linking = ref(false)
+const linkNote = ref(null)
+
+async function viewCommits() {
+  linking.value = true
+  linkNote.value = null
+  try {
+    const data = await apiFetch(`/api/activity/${props.session.session_id}/commits`)
+    if (!data.commits?.length) {
+      linkNote.value = data.reason || 'No commits matched this session'
+      return
+    }
+    router.push({
+      path: '/history',
+      query: { repo: data.repo_id, bundle: data.commits.map((c) => c.sha).join(','), mode: 'set' },
+    })
+  } catch (err) {
+    linkNote.value = err.message === 'backend-unreachable' ? 'Backend not reachable' : err.message
+  } finally {
+    linking.value = false
+  }
+}
 
 async function summarize() {
   if (summary.value) {
@@ -140,7 +164,17 @@ const shortName = (path) => path.split(/[\\/]/).pop()
         {{ summarizing ? 'Summarizing…' : 'Summary' }}
         <template v-if="!summarizing">{{ summary ? '▾' : '▸' }}</template>
       </button>
+      <button
+        class="inline-flex items-center gap-1.5 text-xs text-coral hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+        :disabled="linking"
+        title="See the commits made during this session"
+        @click="viewCommits"
+      >
+        {{ linking ? 'Finding…' : 'Commits →' }}
+      </button>
     </div>
+
+    <p v-if="linkNote" class="mt-1.5 text-xs text-slate-500">{{ linkNote }}</p>
 
     <ul v-if="showFiles" class="mt-1.5 space-y-0.5">
       <li

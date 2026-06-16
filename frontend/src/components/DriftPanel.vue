@@ -34,14 +34,16 @@ const when = (iso) => (iso ? new Date(iso).toLocaleString() : '?')
 
 <template>
   <div class="rounded-lg border border-amber-500/30 bg-panel p-4">
-    <p class="text-xs text-slate-400">
+    <p v-if="drift.latest_at || drift.previous_at" class="text-xs text-slate-400">
       Architecture changed between
       <span class="text-slate-300">{{ when(drift.previous_at) }}</span> and
       <span class="text-slate-300">{{ when(drift.latest_at) }}</span>
       <span class="ml-2 text-slate-600">({{ drift.snapshot_count }} snapshots recorded)</span>
     </p>
 
-    <div class="mt-3 grid gap-4 lg:grid-cols-2">
+    <div class="grid gap-4 lg:grid-cols-2"
+      :class="(drift.latest_at || drift.previous_at) ? 'mt-3' : ''"
+    >
       <div v-for="section in sections" :key="section.key">
         <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
           {{ section.label }} ({{ section.items.length }})

@@ -14,6 +14,9 @@ const props = defineProps({
   heightClass: { type: String, default: 'h-[480px]' },
   // [{label, color}] - overrides the default .NET solution-folder legend
   legend: { type: Array, default: null },
+  // node ids to mark as added/changed (dashed emerald halo) - used by the
+  // git-history bundle review to overlay the architectural delta on the graph
+  highlight: { type: Array, default: null },
 })
 const emit = defineEmits(['select', 'focus'])
 
@@ -82,12 +85,15 @@ const MODES = {
 function build() {
   if (cy) cy.destroy()
   const m = MODES[props.mode] || MODES.overview
+  const added = new Set(props.highlight || [])
   cy = cytoscape({
     container: container.value,
     elements: [
       ...props.nodes.map((n) => ({
         data: { ...n, color: nodeColor(n) },
-        classes: n.id === props.focusId ? 'focused' : '',
+        classes: [n.id === props.focusId ? 'focused' : '', added.has(n.id) ? 'added' : '']
+          .filter(Boolean)
+          .join(' '),
       })),
       ...props.edges.map((e, i) => ({
         data: { id: `e${i}`, source: e.source, target: e.target },
@@ -120,6 +126,15 @@ function build() {
           color: '#ffffff',
           width: m.node * 1.4,
           height: m.node * 1.4,
+        },
+      },
+      {
+        selector: 'node.added',
+        style: {
+          'border-width': 3,
+          'border-color': '#34d399',
+          'border-style': 'dashed',
+          'background-opacity': 1,
         },
       },
       {
@@ -183,7 +198,7 @@ onMounted(() => {
   })
   resizeObserver.observe(container.value)
 })
-watch(() => [props.nodes, props.edges, props.mode, props.focusId], build, { deep: false })
+watch(() => [props.nodes, props.edges, props.mode, props.focusId, props.highlight], build, { deep: false })
 onBeforeUnmount(() => {
   resizeObserver && resizeObserver.disconnect()
   cy && cy.destroy()
