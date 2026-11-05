@@ -1,11 +1,14 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { apiFetch, usePolling } from '../composables/useApi'
 import { useEventStream } from '../composables/useEventStream'
 import SessionCard from '../components/SessionCard.vue'
 import SplitPane from '../components/SplitPane.vue'
 
+const route = useRoute()
 const sessions = ref(null)
+const indexing = ref(false)
 const backendDown = ref(false)
 const { liveEvents, connected } = useEventStream()
 
@@ -17,6 +20,19 @@ const EVENT_LABELS = {
   SubagentStop: { label: 'agent finished', class: 'text-violet-400' },
   PostToolUse: { label: 'edited', class: 'text-amber-400' },
 }
+const PUBLISHED = { label: 'published', class: 'text-coral' }
+const IDLE_PING = { label: 'idle', class: 'text-slate-500' }
+
+const isArtifactEvent = (event) =>
+  event.event === 'PostToolUse' &&
+  (event.tool_name === 'Artifact' || /^mcp__claude(-artifacts|_ai_Claude_Docs)__/.test(event.tool_name || ''))
+
+function eventMeta(event) {
+  if (isArtifactEvent(event)) return PUBLISHED
+  // the ~60s "waiting for your input" ping after a turn ends isn't a prompt
+  if (event.event === 'Notification' && /waiting for your input/i.test(event.message || '')) return IDLE_PING
+  return EVENT_LABELS[event.event] || { label: event.event, class: 'text-slate-400' }
+}
 
 const attentionCount = computed(
   () => (sessions.value || []).filter((s) => s.state === 'waiting' || s.state === 'done').length
@@ -26,6 +42,7 @@ async function refresh() {
   try {
     const data = await apiFetch('/api/activity')
     sessions.value = data.sessions
+    indexing.value = data.indexing
     // seed the live feed with recent history on first load
     if (!liveEvents.value.length && data.events.length) {
       liveEvents.value = data.events
@@ -38,16 +55,20 @@ async function refresh() {
 
 usePolling(refresh, 30_000)
 
-// refresh session list shortly after session lifecycle events arrive
+// refresh session list shortly after lifecycle events or publishes arrive -
+// publishes need a few seconds for the transcript index to pick them up
 watch(
   () => liveEvents.value[0],
   (event) => {
-    if (event && event.event !== 'PostToolUse') setTimeout(refresh, 1500)
+    if (!event) return
+    if (isArtifactEvent(event)) setTimeout(refresh, 7000)
+    else if (event.event !== 'PostToolUse') setTimeout(refresh, 1500)
   }
 )
 
 const timeOf = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '')
 const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
+const eventDetail = (event) => (isArtifactEvent(event) ? event.artifact_title || shortName(event.file_path) : shortName(event.file_path))
 </script>
 
 <template>
@@ -55,7 +76,10 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
     <header class="mb-6 flex shrink-0 items-end justify-between">
       <div>
         <h1 class="text-xl font-semibold text-white">Activity</h1>
-        <p class="mt-1 text-sm text-slate-500">Agent sessions and live tool activity</p>
+        <p class="mt-1 text-sm text-slate-500">
+          Agent sessions and live tool activity
+          <span v-if="indexing" class="ml-2 text-amber-400/80">- indexing transcripts…</span>
+        </p>
       </div>
       <div class="flex items-center gap-4">
         <span
@@ -92,10 +116,15 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
           <div v-for="i in 3" :key="i" class="h-24 animate-pulse rounded-lg border border-edge bg-panel/50" />
         </div>
         <p v-else-if="!sessions.length" class="rounded-lg border border-dashed border-edge bg-panel/40 px-6 py-10 text-center text-sm text-slate-500">
-          No sessions in the last 3 days
+          {{ indexing ? 'Indexing session transcripts…' : 'No sessions in the last 3 days' }}
         </p>
         <div v-else class="grid min-h-0 flex-1 content-start items-start gap-3 overflow-auto pr-1 2xl:grid-cols-2">
-          <SessionCard v-for="session in sessions" :key="session.session_id" :session="session" />
+          <SessionCard
+            v-for="session in sessions"
+            :key="session.session_id"
+            :session="session"
+            :highlight="session.session_id === route.query.session"
+          />
         </div>
       </section>
       </template>
@@ -116,11 +145,21 @@ const shortName = (path) => (path ? path.split(/[\\/]/).pop() : null)
             class="flex items-baseline gap-2 border-b border-edge/40 py-1.5 text-xs last:border-0"
           >
             <span class="shrink-0 font-mono text-[10px] text-slate-600">{{ timeOf(event.ts) }}</span>
-            <span class="shrink-0" :class="(EVENT_LABELS[event.event] || {}).class || 'text-slate-400'">
-              {{ (EVENT_LABELS[event.event] || {}).label || event.event }}
+            <span class="shrink-0" :class="eventMeta(event).class">
+              {{ eventMeta(event).label }}
             </span>
-            <span v-if="shortName(event.file_path)" class="min-w-0 truncate font-mono text-slate-300" :title="event.file_path">
-              {{ shortName(event.file_path) }}
+            <a
+              v-if="isArtifactEvent(event) && event.artifact_url"
+              :href="event.artifact_url"
+              target="_blank"
+              rel="noopener"
+              class="min-w-0 truncate text-slate-300 hover:text-coral"
+              :title="event.artifact_label || event.artifact_url"
+            >
+              {{ eventDetail(event) || 'artifact' }} ↗
+            </a>
+            <span v-else-if="eventDetail(event)" class="min-w-0 truncate font-mono text-slate-300" :title="event.file_path">
+              {{ eventDetail(event) }}
             </span>
             <span class="ml-auto shrink-0 text-[10px] text-slate-500">{{ event.project }}</span>
           </div>

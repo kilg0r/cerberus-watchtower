@@ -7,6 +7,12 @@ const routes = [
   { path: '/review', name: 'review', component: ReviewQueueView },
   { path: '/activity', name: 'activity', component: ActivityView },
   {
+    path: '/artifacts',
+    name: 'artifacts',
+    // lazy: keeps the markdown renderer out of the main bundle
+    component: () => import('../views/ArtifactsView.vue'),
+  },
+  {
     path: '/architecture',
     name: 'architecture',
     // lazy: keeps cytoscape out of the main bundle

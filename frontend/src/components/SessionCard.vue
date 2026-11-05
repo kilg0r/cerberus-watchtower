@@ -1,14 +1,28 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { apiFetch } from '../composables/useApi'
+import { relative } from '../utils/time'
 
 const props = defineProps({
   session: { type: Object, required: true },
+  highlight: { type: Boolean, default: false },
 })
 
 const router = useRouter()
+const root = ref(null)
 const showFiles = ref(false)
+
+onMounted(() => {
+  if (props.highlight) root.value?.scrollIntoView({ block: 'center' })
+})
+
+const filesCount = computed(() => props.session.files_edited_count ?? props.session.files_edited?.length ?? 0)
+const subagents = computed(() => props.session.subagents?.count || 0)
+// other repos this session edited, beyond the one it's labelled with
+const otherRepos = computed(() =>
+  (props.session.repos || []).filter((r) => r.repo_id !== props.session.repo_id).map((r) => r.name)
+)
 const summary = ref(null)
 const summarizing = ref(false)
 const summaryError = ref(null)
@@ -53,21 +67,15 @@ async function summarize() {
   }
 }
 
-function relative(iso) {
-  if (!iso) return '?'
-  const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
-  if (seconds < 60) return `${seconds}s ago`
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`
-  return `${Math.round(seconds / 86400)}d ago`
-}
-
 const duration = computed(() => {
   const ms =
-    new Date(props.session.last_activity).getTime() -
+    new Date(props.session.latest_activity || props.session.last_activity).getTime() -
     new Date(props.session.started_at).getTime()
   const minutes = Math.round(ms / 60000)
-  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  // long-lived sessions get resumed for weeks - days read better than 4068h
+  return hours < 48 ? `${hours}h ${minutes % 60}m` : `${Math.floor(hours / 24)}d ${hours % 24}h`
 })
 
 const topTools = computed(() =>
@@ -101,8 +109,12 @@ const shortName = (path) => path.split(/[\\/]/).pop()
 
 <template>
   <article
+    ref="root"
     class="rounded-lg border bg-panel p-4"
-    :class="needsAttention ? 'border-amber-500/30' : 'border-edge'"
+    :class="[
+      needsAttention ? 'border-amber-500/30' : 'border-edge',
+      highlight ? 'ring-2 ring-coral/60' : '',
+    ]"
   >
     <header class="flex items-center gap-2.5">
       <span class="h-2 w-2 shrink-0 rounded-full" :class="stateMeta.dot" />
@@ -115,11 +127,22 @@ const shortName = (path) => path.split(/[\\/]/).pop()
       >
         {{ stateMeta.badgeText }}
       </span>
-      <span class="ml-auto text-xs text-slate-500">
-        {{ session.active ? 'active now' : stateMeta.label || relative(session.last_activity) }}
+      <span
+        v-if="subagents"
+        class="rounded-full border border-violet-500/30 px-1.5 py-0.5 text-[9px] font-medium text-violet-300"
+        :title="`${subagents} subagent transcript${subagents === 1 ? '' : 's'}`"
+      >
+        {{ subagents }} agent{{ subagents === 1 ? '' : 's' }}
+      </span>
+      <span class="ml-auto shrink-0 text-xs text-slate-500">
+        {{ session.active ? 'active now' : stateMeta.label || relative(session.latest_activity || session.last_activity) }}
         &middot; {{ duration }}
       </span>
     </header>
+
+    <p v-if="otherRepos.length" class="mt-1 truncate text-[10px] text-slate-500" :title="session.cwd">
+      also edited: {{ otherRepos.join(', ') }}
+    </p>
 
     <p
       v-if="session.title"
@@ -145,11 +168,11 @@ const shortName = (path) => path.split(/[\\/]/).pop()
 
     <div class="mt-3 flex items-center gap-4">
       <button
-        v-if="session.files_edited?.length"
+        v-if="filesCount"
         class="text-xs text-coral hover:underline"
         @click="showFiles = !showFiles"
       >
-        {{ session.files_edited.length }} file{{ session.files_edited.length === 1 ? '' : 's' }} edited
+        {{ filesCount }} file{{ filesCount === 1 ? '' : 's' }} edited
         {{ showFiles ? '▾' : '▸' }}
       </button>
       <button
@@ -176,6 +199,38 @@ const shortName = (path) => path.split(/[\\/]/).pop()
 
     <p v-if="linkNote" class="mt-1.5 text-xs text-slate-500">{{ linkNote }}</p>
 
+    <ul v-if="session.artifacts?.length" class="mt-2.5 space-y-1 border-t border-edge/60 pt-2">
+      <li v-for="artifact in session.artifacts" :key="artifact.id" class="flex items-center gap-2 text-xs">
+        <span
+          class="shrink-0 rounded border px-1 py-px text-[8px] font-semibold uppercase tracking-wide"
+          :class="artifact.kind === 'doc' ? 'border-violet-500/40 text-violet-300' : 'border-sky-500/40 text-sky-300'"
+        >
+          {{ artifact.kind === 'doc' ? 'doc' : 'artifact' }}
+        </span>
+        <RouterLink
+          :to="{ path: '/artifacts', query: { id: artifact.id } }"
+          class="min-w-0 truncate hover:text-coral"
+          :class="artifact.deleted ? 'text-slate-500 line-through' : 'text-slate-300'"
+          :title="artifact.title"
+        >
+          {{ artifact.title }}
+        </RouterLink>
+        <a
+          v-if="artifact.url"
+          :href="artifact.url"
+          target="_blank"
+          rel="noopener"
+          class="shrink-0 text-[10px] text-slate-500 hover:text-coral"
+          title="Open in Claude"
+        >
+          ↗
+        </a>
+      </li>
+    </ul>
+
+    <p v-if="showFiles && filesCount > session.files_edited.length" class="mt-1.5 text-[10px] text-slate-600">
+      showing the {{ session.files_edited.length }} most recent of {{ filesCount }}
+    </p>
     <ul v-if="showFiles" class="mt-1.5 space-y-0.5">
       <li
         v-for="file in session.files_edited"

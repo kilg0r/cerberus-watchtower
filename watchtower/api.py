@@ -2,14 +2,15 @@
 
 import asyncio
 import re
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
-from . import config, drift, events, notifier, system_ports
+from . import artifacts, config, drift, events, notifier, sessions, system_ports
 from .ai import narrator, summarizer
 from .db import get_session_factory
 from .scanners import git_scanner, scan_architecture, transcript_parser
@@ -18,11 +19,21 @@ from .scanners import arch_at_commit, git_history
 # last successful architecture scan per repo - feeds narrate without rescanning
 _arch_cache: dict[str, dict] = {}
 
+
+def _ingest_artifact_ops(ops: list[dict]) -> None:
+    with get_session_factory()() as session:
+        artifacts.ingest(session, ops)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    notify_task = asyncio.create_task(notifier.run())
+    tasks = [
+        asyncio.create_task(notifier.run()),
+        asyncio.create_task(sessions.run(sessions.index, _ingest_artifact_ops)),
+    ]
     yield
-    notify_task.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="Cerberus Watchtower", lifespan=_lifespan)
@@ -88,71 +99,128 @@ async def summarize(repo_id: str) -> dict:
         raise HTTPException(502, str(exc)) from exc
 
 
+def _norm_path(path: str) -> str:
+    return path.lower().replace("/", "\\").rstrip("\\")
+
+
+def _repo_table() -> list[tuple[str, config.RepoConfig]]:
+    return [(_norm_path(str(repo.path)), repo) for repo in config.registry()]
+
+
+def _repo_for(path: str | None, table: list[tuple[str, config.RepoConfig]]) -> config.RepoConfig | None:
+    """Registered repo containing `path`: exact match or boundary-aware prefix;
+    deepest path wins so sibling repos sharing a name prefix can't shadow each
+    other."""
+    if not path:
+        return None
+    target = _norm_path(path)
+    best, best_len = None, -1
+    for repo_path, repo in table:
+        if (target == repo_path or target.startswith(repo_path + "\\")) and len(repo_path) > best_len:
+            best, best_len = repo, len(repo_path)
+    return best
+
+
 def _project_label(cwd: str | None) -> dict:
     """Map a session cwd onto the repo registry, falling back to the dir name."""
     if not cwd:
         return {"project": "unknown", "repo_id": None}
-    cwd_lower = cwd.lower().replace("/", "\\").rstrip("\\")
-    # exact match or boundary-aware prefix (cwd inside the repo); deepest path
-    # wins so sibling repos sharing a name prefix can't shadow each other
-    best = None
-    for repo in config.registry():
-        repo_path = str(repo.path).lower().rstrip("\\")
-        if cwd_lower == repo_path or cwd_lower.startswith(repo_path + "\\"):
-            if best is None or len(repo_path) > len(str(best.path).rstrip("\\")):
-                best = repo
-    if best is not None:
-        return {"project": best.name, "repo_id": best.id}
+    repo = _repo_for(cwd, _repo_table())
+    if repo is not None:
+        return {"project": repo.name, "repo_id": repo.id}
     return {"project": cwd.replace("/", "\\").rstrip("\\").rsplit("\\", 1)[-1], "repo_id": None}
 
 
-# A session's live state is inferred from its most recent hook event:
-#   Notification -> blocked on a permission/input prompt  ("waiting")
-#   Stop         -> turn finished, awaiting the next prompt ("done")
-#   tool/prompt  -> mid-flight                              ("working")
-# "waiting"/"done" are the states that need the user's attention, so they stay
-# relevant for a while; "working" requires very recent activity to count as live.
+_RECENT_EDITS = 300  # edits considered when inferring what a session works on
+
+
+def _session_projects(summary: dict, event_cwd: str | None, table) -> dict:
+    """Which project a session is about. Sessions are often launched from a
+    workspace root (e.g. _dev\\_paytable) and work inside one or more repos
+    below it, so a non-repo cwd defers to the repos its edits landed in."""
+    counts: Counter[str] = Counter()
+    by_id: dict[str, config.RepoConfig] = {}
+    for path in summary.get("files_edited", [])[-_RECENT_EDITS:]:
+        repo = _repo_for(path, table)
+        if repo is not None:
+            counts[repo.id] += 1
+            by_id[repo.id] = repo
+    touched = [
+        {"repo_id": repo_id, "name": by_id[repo_id].name, "edits": n}
+        for repo_id, n in counts.most_common(5)
+    ]
+
+    primary = _repo_for(summary.get("cwd"), table) or _repo_for(summary.get("start_cwd"), table)
+    if primary is None and touched:
+        primary = by_id[touched[0]["repo_id"]]
+    if primary is None:
+        primary = _repo_for(event_cwd, table)
+    if primary is not None:
+        label = {"project": primary.name, "repo_id": primary.id}
+    else:
+        label = _project_label(summary.get("cwd"))
+    return {**label, "repos": touched}
+
+
+# A session's live state comes from its most recent hook event, cross-checked
+# against transcript activity:
+#   Notification (permission/approval) -> blocked on a decision     ("waiting")
+#   Stop, or the idle "waiting for your input" ping -> turn finished ("done")
+#   prompt/tool/subagent events, or transcript writes -> mid-flight  ("working")
+# A transcript (or subagent transcript) written well after the last hook event
+# means the session moved on - e.g. a permission was granted and a non-edit
+# tool is running, which emits no hook. "waiting"/"done" need the user's
+# attention, so they stay relevant for a while; "working" needs a recent pulse.
 _LIVE_WINDOW = timedelta(minutes=5)        # working pulse
 _WAITING_WINDOW = timedelta(hours=8)       # blocked sessions matter for a long time
 _DONE_WINDOW = timedelta(hours=2)          # finished-but-recent, awaiting your input
+_MOVED_ON = timedelta(seconds=30)
 _WORKING_EVENTS = {"UserPromptSubmit", "PostToolUse", "SubagentStop", "SessionStart"}
+
+
+def session_state(activity: datetime | None, event: dict | None, now: datetime) -> str:
+    event_ts = sessions.parse_iso(event.get("ts")) if event else None
+    latest = max(filter(None, (activity, event_ts)), default=None)
+    if latest is None:
+        return "idle"
+    age = now - latest
+    name = event.get("event") if event else None
+    moved_on = activity is not None and event_ts is not None and activity - event_ts > _MOVED_ON
+    if not moved_on and name == "Notification" and not events.is_idle_notification(event):
+        return "waiting" if age < _WAITING_WINDOW else "idle"
+    if not moved_on and (name == "Stop" or (event and events.is_idle_notification(event))):
+        return "done" if age < _DONE_WINDOW else "idle"
+    if age < _LIVE_WINDOW and (moved_on or name in _WORKING_EVENTS or name is None):
+        return "working"
+    return "idle"
+
+
+def _activity_payload() -> dict:
+    session_list = sessions.index.sessions(days=3, limit=40)
+    latest_events = events.latest_by_session()
+    recent = events.read_recent_events(limit=100)
+    with get_session_factory()() as db:
+        session_artifacts = artifacts.artifacts_by_session(db, [s["session_id"] for s in session_list])
+
+    table = _repo_table()
+    now = datetime.now(timezone.utc)
+    for session in session_list:
+        event = latest_events.get(session["session_id"])
+        session.update(_session_projects(session, (event or {}).get("cwd"), table))
+        session["state"] = session_state(sessions.parse_iso(session["latest_activity"]), event, now)
+        session["active"] = session["state"] == "working"  # back-compat alias
+        session["artifacts"] = session_artifacts.get(session["session_id"], [])
+        # files_edited can run to thousands on long sessions - the card shows a list
+        session["files_edited_count"] = len(session["files_edited"])
+        session["files_edited"] = session["files_edited"][-200:]
+    for event in recent:
+        event.update(_project_label(event.get("cwd")))
+    return {"sessions": session_list, "events": recent, "indexing": not sessions.index.ready}
 
 
 @app.get("/api/activity")
 async def activity() -> dict:
-    sessions = await asyncio.to_thread(transcript_parser.recent_sessions)
-    recent = events.read_recent_events(limit=100)
-
-    # recent is newest-first, so the first event seen per session is its latest
-    latest_event: dict[str, str] = {}
-    for e in recent:
-        sid = e.get("session_id")
-        if sid and sid not in latest_event:
-            latest_event[sid] = e.get("event")
-    now = datetime.now(timezone.utc)
-    for session in sessions:
-        session.update(_project_label(session.get("cwd")))
-        try:
-            last = datetime.fromisoformat(session["last_activity"].replace("Z", "+00:00"))
-            age = now - last
-        except (ValueError, AttributeError, TypeError):
-            age = None
-        name = latest_event.get(session["session_id"])
-        if age is None:
-            state = "idle"
-        elif name == "Notification" and age < _WAITING_WINDOW:
-            state = "waiting"
-        elif name == "Stop" and age < _DONE_WINDOW:
-            state = "done"
-        elif name in _WORKING_EVENTS and age < _LIVE_WINDOW:
-            state = "working"
-        else:
-            state = "idle"
-        session["state"] = state
-        session["active"] = state == "working"  # back-compat alias
-    for event in recent:
-        event.update(_project_label(event.get("cwd")))
-    return {"sessions": sessions, "events": recent}
+    return await asyncio.to_thread(_activity_payload)
 
 
 @app.post("/api/activity/{session_id}/summarize")
@@ -178,13 +246,15 @@ async def summarize_session(session_id: str) -> dict:
 async def session_commits(session_id: str) -> dict:
     """Commits attributable to a session - authored inside its active window,
     flagged 'files' when they also touch a file the session edited."""
-    path = transcript_parser.find_transcript(session_id)
-    if path is None:
-        raise HTTPException(404, f"unknown session: {session_id}")
-    info = await asyncio.to_thread(transcript_parser.parse_transcript, path)
+    info = sessions.index.summary_for(session_id)
+    if info is None:
+        path = transcript_parser.find_transcript(session_id)
+        if path is None:
+            raise HTTPException(404, f"unknown session: {session_id}")
+        info = await asyncio.to_thread(transcript_parser.parse_transcript, path)
     if info is None:
         raise HTTPException(404, "could not parse session transcript")
-    label = _project_label(info.get("cwd"))
+    label = _session_projects(info, None, _repo_table())
     repo = config.repo_by_id(label["repo_id"]) if label.get("repo_id") else None
     if repo is None:
         return {
@@ -201,6 +271,75 @@ async def session_commits(session_id: str) -> dict:
         info.get("files_edited"),
     )
     return {"repo_id": repo.id, "project": repo.name, "commits": commits}
+
+
+# ============================== artifacts ==============================
+# Everything sessions published (Claude Code file artifacts, claude.ai pages,
+# Claude Docs), indexed from transcripts by the background session loop.
+
+# local copies are served under an opaque origin: scripts run (artifacts are
+# often interactive) but can't read Watchtower's API or storage
+_SANDBOX_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals"
+
+
+def _artifact_project(session_ids: list[str], cwd: str | None, table, cache: dict) -> dict:
+    """An artifact belongs to the project its (latest) session works on; the
+    raw cwd is often a workspace root or scratchpad. `cache` is per request -
+    many artifacts share a session."""
+    for session_id in session_ids:
+        if session_id not in cache:
+            summary = sessions.index.summary_for(session_id)
+            cache[session_id] = _session_projects(summary, None, table) if summary else None
+        if cache[session_id]:
+            return {k: cache[session_id][k] for k in ("project", "repo_id")}
+    return _project_label(cwd)
+
+
+def _artifact_list_payload() -> dict:
+    with get_session_factory()() as db:
+        items = artifacts.list_artifacts(db)
+    table, cache = _repo_table(), {}
+    for item in items:
+        item.update(_artifact_project(item["session_ids"], item.get("cwd"), table, cache))
+    return {"artifacts": items, "indexing": not sessions.index.ready}
+
+
+@app.get("/api/artifacts")
+async def list_artifacts() -> dict:
+    return await asyncio.to_thread(_artifact_list_payload)
+
+
+@app.get("/api/artifacts/{artifact_id}")
+async def artifact_detail(artifact_id: str) -> dict:
+    def _detail() -> dict | None:
+        with get_session_factory()() as db:
+            return artifacts.artifact_detail(db, artifact_id)
+
+    detail = await asyncio.to_thread(_detail)
+    if detail is None:
+        raise HTTPException(404, f"unknown artifact: {artifact_id}")
+    table, cache = _repo_table(), {}
+    session_ids = list(dict.fromkeys(op["session_id"] for op in detail["ops"]))  # newest first
+    detail.update(_artifact_project(session_ids, detail.get("cwd"), table, cache))
+    titles = sessions.index.titles(set(session_ids))
+    for op in detail["ops"]:
+        op["session_title"] = titles.get(op["session_id"])
+        op["project"] = _artifact_project([op["session_id"]], op.get("cwd"), table, cache)["project"]
+    return detail
+
+
+@app.get("/api/artifacts/{artifact_id}/content/{rel_path:path}")
+async def artifact_content(artifact_id: str, rel_path: str) -> Response:
+    path = artifacts.content_path(artifact_id, rel_path)
+    if path is None:
+        raise HTTPException(404, "no local copy of that file")
+    headers = {"Content-Security-Policy": _SANDBOX_CSP, "Cache-Control": "no-cache"}
+    suffix = path.suffix.lower()
+    if suffix in (".html", ".htm"):
+        html = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+        return HTMLResponse(artifacts.with_storage_shim(html), headers=headers)
+    media_type = "text/plain; charset=utf-8" if suffix in (".md", ".markdown", ".txt") else None
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @app.get("/api/ports")

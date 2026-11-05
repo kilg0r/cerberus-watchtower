@@ -9,7 +9,7 @@ with call-flow drill-down, drift detection, and AI narratives.
 ```powershell
 .venv\Scripts\python.exe -m watchtower          # run server -> http://127.0.0.1:8765
 scripts\Start-Watchtower.ps1                    # idempotent launcher (-Stop | -NoBrowser); `watchtower` profile fn
-.venv\Scripts\python.exe -m pytest tests/       # run tests (37 passing)
+.venv\Scripts\python.exe -m pytest tests/       # run tests (93 passing)
 cd frontend; npm run dev                        # frontend dev mode (proxies /api to :8765)
 cd frontend; npm run build                      # production build -> frontend/dist
 ```
@@ -24,7 +24,14 @@ cd frontend; npm run build                      # production build -> frontend/d
     `class_methods`), `vue_scanner` (component/store graph,
     routes, deps), `python_scanner` (module import graph, deps, endpoints,
     config inventory), `generic_scanner` (fallback inventory),
-    `transcript_parser` (Claude Code session history)
+    `transcript_parser` (incremental `TranscriptState` per transcript file:
+    session summary + resolved artifact tool calls)
+  - `watchtower/sessions.py` - `SessionIndex`: one `TranscriptState` per
+    main/subagent/workflow-agent transcript, advanced every 5s by a background
+    loop started in the API lifespan; feeds Activity and the artifact index
+  - `watchtower/artifacts.py` - artifact index (claude.ai artifacts via the
+    built-in `Artifact` tool or claude-artifacts MCP, plus Claude Docs):
+    normalize ops, idempotent ingest, local copies, sandboxed serving
   - `watchtower/system_ports.py` - live OS socket table via psutil (Ports tab)
   - `watchtower/ai/` - `summarizer` (diff summaries), `narrator` (project
     narratives); both shell out to `claude -p` headless
@@ -35,7 +42,8 @@ cd frontend; npm run build                      # production build -> frontend/d
 - **Frontend**: Vue 3 (`<script setup>`) + Vite + Tailwind v4 + vue-router +
   Cytoscape (lazy-loaded). No Pinia - composables only.
 - **Data dir**: `~/.cerberus-watchtower/` - `watchtower.db` (caches, snapshots,
-  narratives) and `events.jsonl` (hook event log, append-only)
+  narratives, artifact index), `artifacts/<uuid>/current/` (local artifact
+  copies) and `events.jsonl` (hook event log, append-only)
 
 ## Critical conventions
 
@@ -59,6 +67,39 @@ cd frontend; npm run build                      # production build -> frontend/d
   every tool use in every Claude Code session on this machine. Append and exit 0.
 - **API contract is fixed** - the frontend is built against the exact response
   shapes in `api.py`; change both sides together.
+
+## Transcripts, activity and artifacts
+
+- **No size caps on transcripts** - busy sessions pass 500 MB. Parsing is
+  incremental (byte offset per file) and json.loads only runs on lines that
+  pass byte pre-filters, which assume Claude Code's compact JSON
+  (`"type":"user"`, no spaces) - test fixtures must use
+  `json.dumps(..., separators=(",", ":"))`.
+- **Skip `api-request-blob` records** - they replay whole requests (tool calls
+  included); counting them doubles tool counts.
+- **Subagent transcripts** live at `<session>/subagents/agent-*.jsonl` and
+  `<session>/subagents/workflows/<run>/agent-*.jsonl`; both roll up to the
+  parent session (`session_id_for`).
+- **Session state**: the Notification hook fires for permission prompts AND a
+  ~60s idle ping ("Claude is waiting for your input") after every turn - only
+  the former is "waiting"; the idle ping means "done". A transcript written
+  >30s after the last hook event means the session moved on (e.g. a permission
+  was granted and a non-edit tool is running).
+- **Artifact ids are uuids** - claude.ai's `/artifact/<short>` id is the uuid
+  in base58 (`artifacts.canonical_id`). The built-in `Artifact` tool and the
+  claude-artifacts MCP address the same objects, so both are kind `artifact`.
+  Only results that published something are ops (reads/watch/list/open are
+  not); ingestion is idempotent by `tool_use_id` and replays chronologically.
+- **Local copies are captured at ingest time** - built-in publishes and
+  `publish_files` point at local (usually scratchpad) files, copied when
+  indexed; `publish_version` HTML and `edit_version` edits come from the
+  transcript. `content_status`: ok | stale (an edit couldn't be replayed or a
+  file was missing) | missing (source gone) | none (docs).
+- **Serving local copies**: always under the CSP `sandbox` header (opaque
+  origin - artifact scripts must not reach this API); HTML gets
+  `STORAGE_SHIM` injected because sandboxed localStorage access throws and
+  blanks many artifacts. Headless-Edge screenshots render sandboxed iframes
+  blank (out-of-process) - use `--disable-site-isolation-trials` to verify.
 
 ## Registry (`repos.toml`)
 

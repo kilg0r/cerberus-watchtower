@@ -21,10 +21,23 @@ it only regenerates when the changes change.
 
 ### Activity
 Live feed of Claude Code agent activity on the machine, streamed over SSE from
-lifecycle hooks (session start/stop, file edits, subagent completion). Session
-cards backfilled from transcript parsing: what each session worked on, which
-files it edited, tool usage, the prompt that started it, and whether it's
-active right now.
+lifecycle hooks (session start/stop, prompts, file edits, artifact publishes,
+subagent completion). Session cards come from an incremental transcript index:
+what each session worked on, which repos it edited (sessions launched from a
+workspace root are labelled by where their edits landed), tool usage, subagent
+count, the artifacts it published, and its live state - **working**, **needs
+input** (a permission/approval prompt), **finished** (turn ended, including
+the idle ping that follows), or idle. Transcripts of any size are indexed:
+each file is read once, then only its appended tail.
+
+### Artifacts
+Everything agent sessions publish - claude.ai artifacts (from Claude Code's
+built-in `Artifact` tool or the claude-artifacts MCP) and Claude Docs - in one
+searchable list, filterable by kind and project. Each artifact shows its
+version history (label, time, and the session that made each change, linked
+back to Activity), an "Open in Claude" link, and - where Watchtower captured
+the content - a local copy previewed in a sandboxed frame. The index persists
+in SQLite, so it outlives Claude Code's transcript cleanup.
 
 ### Architecture
 Re-derived from source on every scan, so the map cannot go stale. Every stack
@@ -118,10 +131,18 @@ include = true                   # register a non-git project directory
 ### Agent feed hooks (optional)
 
 `hooks/emit_event.py` is a stdlib-only, append-and-exit emitter designed to be
-registered in `~/.claude/settings.json` for `SessionStart`, `PostToolUse`
-(matcher `Edit|Write|NotebookEdit`), `Stop`, and `SubagentStop` - async
-exec-form, so it adds zero latency to agent sessions. Events land in
-`~/.cerberus-watchtower/events.jsonl`.
+registered in `~/.claude/settings.json` for `SessionStart`, `UserPromptSubmit`,
+`PostToolUse`, `Notification`, `Stop`, and `SubagentStop` - async exec-form,
+so it adds zero latency to agent sessions. Events land in
+`~/.cerberus-watchtower/events.jsonl`. The `PostToolUse` matcher covers edits
+plus artifact publishing:
+
+```
+Edit|Write|NotebookEdit|Artifact|mcp__claude-artifacts__publish_version|mcp__claude-artifacts__publish_files|mcp__claude-artifacts__edit_version|mcp__claude-artifacts__create_from_type|mcp__claude_ai_Claude_Docs__batch|mcp__claude_ai_Claude_Docs__create|mcp__claude_ai_Claude_Docs__update
+```
+
+Hooks only drive the live feed and session states; session cards and the
+artifact index come from transcripts and work without them.
 
 ## API
 
@@ -131,8 +152,11 @@ exec-form, so it adds zero latency to agent sessions. Events land in
 | `GET /api/review-queue` | repos with uncommitted changes |
 | `GET /api/review-queue/{id}/diff?path=` | unified diff for one pending file |
 | `POST /api/review-queue/{id}/summarize` | AI summary of pending diff (cached) |
-| `GET /api/activity` | recent agent sessions + events |
+| `GET /api/activity` | recent agent sessions (state, repos, artifacts) + events |
 | `GET /api/events/stream` | SSE live event feed |
+| `GET /api/artifacts` | every published artifact / doc, newest first |
+| `GET /api/artifacts/{id}` | one artifact + its version history |
+| `GET /api/artifacts/{id}/content/{path}` | local copy, served under a CSP sandbox |
 | `GET /api/ports` | live socket table with process identity |
 | `GET /api/architecture-overview` | stats-level scan of every repo |
 | `GET /api/architecture/{id}` | full architecture snapshot (any stack) |
@@ -142,9 +166,12 @@ exec-form, so it adds zero latency to agent sessions. Events land in
 ## Development
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/    # 37 tests; scanners run against synthetic fixtures
+.venv\Scripts\python.exe -m pytest tests/    # 93 tests; scanners run against synthetic fixtures
 cd frontend; npm run dev                     # hot reload on :5173, /api proxied to :8765
 ```
 
 Data lives in `~/.cerberus-watchtower/` (summary/narrative caches, architecture
-snapshots, event log). Delete it to reset - everything regenerates.
+snapshots, artifact index + local copies under `artifacts/`, event log).
+Deleting it resets everything; the artifact index rebuilds from whatever
+transcripts still exist, but artifacts whose transcripts were already cleaned
+up are gone for good.

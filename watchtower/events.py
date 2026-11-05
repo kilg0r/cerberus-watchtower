@@ -13,30 +13,61 @@ from .config import DATA_DIR
 
 EVENTS_FILE = DATA_DIR / "events.jsonl"
 TAIL_BYTES = 256 * 1024
+STATE_TAIL_BYTES = 2 * 1024 * 1024  # ~a day of hook events on a busy day
+
+# Notification hook messages: the idle ping that fires ~60s after a turn ends
+# ("Claude is waiting for your input") means the session is finished, not
+# blocked - only permission/approval prompts actually need a decision
+IDLE_NOTIFICATION_MARKERS = ("waiting for your input",)
 
 
-def read_recent_events(limit: int = 100) -> list[dict]:
-    """Last `limit` events, newest first."""
+def _read_tail(max_bytes: int) -> list[dict]:
+    """Events in the last `max_bytes` of the log, oldest first."""
     if not EVENTS_FILE.is_file():
         return []
     try:
         with EVENTS_FILE.open("rb") as f:
             f.seek(0, 2)
             size = f.tell()
-            f.seek(max(0, size - TAIL_BYTES))
-            chunk = f.read().decode("utf-8", errors="replace")
+            f.seek(max(0, size - max_bytes))
+            chunk = f.read()
     except OSError:
         return []
-    lines = chunk.splitlines()
-    if len(chunk) >= TAIL_BYTES:
+    lines = chunk.split(b"\n")
+    if size > max_bytes:
         lines = lines[1:]  # first line may be cut mid-record
     events = []
     for line in lines:
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError:
+        if not line.strip():
             continue
-    return list(reversed(events[-limit:]))
+        try:
+            parsed = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    return events
+
+
+def read_recent_events(limit: int = 100) -> list[dict]:
+    """Last `limit` events, newest first."""
+    return list(reversed(_read_tail(TAIL_BYTES)[-limit:]))
+
+
+def is_idle_notification(event: dict) -> bool:
+    message = (event.get("message") or "").lower()
+    return event.get("event") == "Notification" and any(m in message for m in IDLE_NOTIFICATION_MARKERS)
+
+
+def latest_by_session(max_bytes: int = STATE_TAIL_BYTES) -> dict[str, dict]:
+    """Most recent hook event per session, from a generous tail of the log -
+    wide enough that a quiet session isn't pushed out by busy ones."""
+    latest: dict[str, dict] = {}
+    for event in _read_tail(max_bytes):
+        session_id = event.get("session_id")
+        if session_id:
+            latest[session_id] = event  # oldest-first, so the last write wins
+    return latest
 
 
 def current_position() -> int:

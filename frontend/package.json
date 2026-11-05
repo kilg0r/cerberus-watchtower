@@ -11,6 +11,7 @@
   "dependencies": {
     "cytoscape": "^3.34.0",
     "cytoscape-dagre": "^3.0.0",
+    "marked": "^15.0.12",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },
