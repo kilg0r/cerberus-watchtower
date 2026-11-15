@@ -16,3 +16,20 @@ export function stamp(iso) {
     minute: '2-digit',
   })
 }
+
+// a ticking duration: 42s, 3m 04s, 1h 12m, 2d 3h
+export function duration(seconds) {
+  if (seconds == null || Number.isNaN(seconds)) return ''
+  const s = Math.max(0, Math.floor(seconds))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
+  const h = Math.floor(m / 60)
+  if (h < 48) return `${h}h ${String(m % 60).padStart(2, '0')}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
+export function megabytes(mb) {
+  if (mb == null) return ''
+  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`
+}

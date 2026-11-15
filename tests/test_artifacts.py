@@ -314,3 +314,27 @@ def test_hook_captures_artifact_fields():
     assert fields["artifact_title"] == "plan.md"
     assert fields["artifact_label"] == "v3"
     assert hook._artifact_fields("Edit", {"file_path": "x"}, {}) == {}
+
+
+def test_force_scheme_rewrites_media_queries_both_ways():
+    css = (
+        "@media (prefers-color-scheme: dark) { body { background: #000 } }"
+        "@media (prefers-color-scheme:light){ body { background: #fff } }"
+        "const dark = matchMedia('(prefers-color-scheme: dark)').matches"
+    )
+    light = artifacts.force_scheme(css, "light")
+    assert "prefers-color-scheme" not in light
+    assert light.count("max-width: 0px") == 2 and light.count("min-width: 0px") == 1  # dark never, light always
+    dark = artifacts.force_scheme(css, "dark")
+    assert dark.count("min-width: 0px") == 2 and dark.count("max-width: 0px") == 1
+    assert artifacts.force_scheme(css, "auto") == css
+
+
+def test_prepare_html_forces_theme_after_the_storage_shim():
+    page = "<!DOCTYPE html><html><head><style>@media (prefers-color-scheme: dark){x{}}</style></head><body></body></html>"
+    assert artifacts.prepare_html(page) == artifacts.with_storage_shim(page)
+    themed = artifacts.prepare_html(page, "light")
+    head = themed.index("<head>") + len("<head>")
+    assert themed[head:].startswith(artifacts.STORAGE_SHIM + "<script>document.documentElement.setAttribute('data-theme','light')")
+    assert "color-scheme:light !important" in themed
+    assert "prefers-color-scheme" not in themed

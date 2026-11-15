@@ -9,7 +9,7 @@ with call-flow drill-down, drift detection, and AI narratives.
 ```powershell
 .venv\Scripts\python.exe -m watchtower          # run server -> http://127.0.0.1:8765
 scripts\Start-Watchtower.ps1                    # idempotent launcher (-Stop | -NoBrowser); `watchtower` profile fn
-.venv\Scripts\python.exe -m pytest tests/       # run tests (93 passing)
+.venv\Scripts\python.exe -m pytest tests/       # run tests (129 passing)
 cd frontend; npm run dev                        # frontend dev mode (proxies /api to :8765)
 cd frontend; npm run build                      # production build -> frontend/dist
 ```
@@ -32,7 +32,13 @@ cd frontend; npm run build                      # production build -> frontend/d
   - `watchtower/artifacts.py` - artifact index (claude.ai artifacts via the
     built-in `Artifact` tool or claude-artifacts MCP, plus Claude Docs):
     normalize ops, idempotent ingest, local copies, sandboxed serving
+  - `watchtower/browser.py` - default-browser name (registry) + `open_url`
+    (ShellExecute) for the Artifacts "Open in Chrome" action
   - `watchtower/system_ports.py` - live OS socket table via psutil (Ports tab)
+  - `watchtower/live_processes.py` - Processes tab: joins Claude Code's
+    running-session registry (`~/.claude/sessions/<pid>.json`), the OS
+    process trees under each claude pid, and the transcript index's in-flight
+    calls / background tasks / subagents into one container per process
   - `watchtower/ai/` - `summarizer` (diff summaries), `narrator` (project
     narratives); both shell out to `claude -p` headless
   - `watchtower/drift.py` - architecture snapshots + structural diffing
@@ -40,7 +46,9 @@ cd frontend; npm run build                      # production build -> frontend/d
   - `hooks/emit_event.py` - Claude Code hook emitter (registered in
     `~/.claude/settings.json`)
 - **Frontend**: Vue 3 (`<script setup>`) + Vite + Tailwind v4 + vue-router +
-  Cytoscape (lazy-loaded). No Pinia - composables only.
+  three.js (3D architecture map, `utils/archScene.js`, lazy chunk) + Cytoscape
+  (2D graph, lazy-loaded). No Pinia - composables only. `?popout=1` on any
+  route renders it without the sidebar (the Processes pop-out window).
 - **Data dir**: `~/.cerberus-watchtower/` - `watchtower.db` (caches, snapshots,
   narratives, artifact index), `artifacts/<uuid>/current/` (local artifact
   copies) and `events.jsonl` (hook event log, append-only)
@@ -61,6 +69,11 @@ cd frontend; npm run build                      # production build -> frontend/d
   args, never `shell=True`, never mutating commands inside scanners.
 - **AI caching discipline**: summaries keyed by diff sha256, narratives by
   structure hash. Never cache failures. `claude` CLI must be on PATH.
+- **Headless `claude -p` runs are isolated** (`summarizer.ISOLATION_FLAGS`):
+  hooks disabled, no MCP servers, no tools, no transcript. Global Stop hooks
+  (the PayTable wrap-up check) otherwise block the stop and the reply to the
+  hook gets cached as the summary/narrative. `--bare` is not an option: it
+  ignores the OAuth login.
 - **Snapshots are a change log, not a scan log** - `drift.record_snapshot` only
   inserts when the structural signature changes.
 - **`hooks/emit_event.py` must stay stdlib-only and never fail** - it runs on
@@ -100,6 +113,81 @@ cd frontend; npm run build                      # production build -> frontend/d
   `STORAGE_SHIM` injected because sandboxed localStorage access throws and
   blanks many artifacts. Headless-Edge screenshots render sandboxed iframes
   blank (out-of-process) - use `--disable-site-isolation-trials` to verify.
+- **Light/dark previews** (`/api/artifacts/{id}/view/{auto|light|dark}/...`):
+  Chromium won't let an embedder change `prefers-color-scheme` inside an
+  iframe, so a forced theme is applied to the served text - `data-theme` on
+  the root (claude.ai's own toggle, which almost every artifact honors) plus
+  every `prefers-color-scheme: X` in HTML/CSS/JS rewritten to an always/never
+  query (`artifacts.force_scheme`). The theme is a path segment so a
+  multi-file page's relative CSS/JS stay themed. `/content/` = unthemed.
+- **Pins live in `artifact_pins`** (own table - `create_all` never alters
+  existing tables, and pins are user state that must survive a re-index).
+  Sorted by an integer `position` (new pins go last), not `pinned_at` -
+  timestamps tie within a clock tick.
+- **Open in browser** (`POST /api/artifacts/{id}/open`): the server launches
+  the default browser because the launcher's Edge app window sends every
+  `target=_blank` link to Edge. URLs are built server-side from the index
+  (`artifacts.browser_url`), never accepted from the client, and the JSON body
+  is the CSRF guard (non-JSON content types are rejected; cross-origin JSON
+  needs a preflight only the Vite origin passes) - don't move `target` to a
+  query param or form field.
+- **Linked artifacts** (`artifacts.link`, `POST /api/artifacts/link`): for
+  artifacts whose publishing transcript was cleaned up before indexing. A link
+  is one `ArtifactOp` with `action="link"`, `tool="watchtower:link"`,
+  `tool_use_id="link:<uuid>"` and **`session_id=""`** - code that walks ops by
+  session must skip the empty id. Links don't count as versions (`op_count`
+  stays 0), never get a local copy, and take dates from the version id: claude.ai
+  version ids lead with the publish time in unix seconds (`version_time`).
+  Watchtower can't read claude.ai itself - an agent with the claude-artifacts
+  MCP supplies title/favicon/sharing/version (`get_artifact`).
+
+## Processes (live)
+
+- **Registry, not guesswork**: `~/.claude/sessions/<pid>.json` maps each
+  running Claude process to its session id, cwd, name and busy/idle/shell
+  status. Read only the `.json` files (the `.key` files hold peer tokens) and
+  keep only `REGISTRY_FIELDS`. An entry is live only if its pid exists *and*
+  its create time matches `procStart` (a Windows FILETIME) - pids get reused.
+- **Never read process environments** - Claude's shells carry
+  `CLAUDE_CODE_MESSAGING_TOKEN`. Commands come from the transcript, or from
+  the bash wrapper's `eval '<cmd>'` (there's no `< /dev/null` when the
+  command reads stdin, e.g. heredocs). The PowerShell launcher passes its
+  script via an env var, so pwsh shells get their command from the transcript.
+- **Only claude subtrees are opened**: `process_table` takes one system-wide
+  ppid map (psutil's private `ppid_map`, with a public fallback) and opens
+  only descendants of registry pids. `process_iter` over the whole machine
+  took 140s on a paging machine. `ProcessCache` keeps psutil handles across
+  polls because `cpu_percent()` measures between calls on the same handle.
+- **In-flight tracking** lives in `TranscriptState.inflight` / `background`.
+  A tool_result resolves its call by the unescaped `"tool_use_id":"..."` key
+  (it can't match inside a JSON string; error results put it after the
+  content). Background launches ("running in background with ID", "Monitor
+  started (task", "Task ID:", "Async agent launched ... agentId:") stay until a
+  `<task-notification>` with a final status, matched by tool-use id or task id.
+- **Subagent transcripts are all `isSidechain`**: subagent states now consume
+  their own sidechain records (main transcripts still skip inlined ones).
+  `agent-<id>.meta.json` gives agentType/description/toolUseId/workflowPhase.
+  Forks copy the parent's spawning Agent call into their transcript - skip
+  the meta `toolUseId`.
+- **Stale entries**: calls/tasks from before the process's `startedAt` belong
+  to a previous run (crash, resume) and are dropped. A background shell task
+  with no matching process has ended (killed with its turn).
+- **Shell → call matching**: task id in the output redirect, then command
+  text, then the latest unclaimed call started before the shell. Leftovers
+  are "orphan" processes.
+
+## Architecture 3D
+
+- `utils/archScene.js` owns pixels/layout/camera/picking, `ArchGraph3D.vue`
+  owns labels/HUD/controls (same split as the cerberuslabsllc sphere).
+  Labels are DOM, positioned per frame with no Vue reactivity, culled when
+  they overlap (priority: selection, neighbours, degree).
+- **Every build needs a fresh `<canvas>`** (`canvasKey`): `dispose()` calls
+  `forceContextLoss()`, and a new renderer on that canvas fails.
+- **UI overlays on the stage must `@pointerdown.stop`**: OrbitControls
+  captures the pointer on the stage, which retargets clicks away from buttons.
+- Headless screenshots: Edge `--screenshot` doesn't drive rAF. Use Playwright
+  (system Python has it) with `--use-angle=swiftshader --enable-unsafe-swiftshader`.
 
 ## Registry (`repos.toml`)
 

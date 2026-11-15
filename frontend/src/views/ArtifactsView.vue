@@ -1,13 +1,16 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch, usePolling } from '../composables/useApi'
+import { ARTIFACT_THEMES, useArtifactTheme } from '../composables/useArtifactTheme'
 import { relative, stamp } from '../utils/time'
 import ArtifactPreview from '../components/ArtifactPreview.vue'
+import PinIcon from '../components/PinIcon.vue'
 import SplitPane from '../components/SplitPane.vue'
 
 const route = useRoute()
 const router = useRouter()
+const theme = useArtifactTheme() // preview light/dark, also used for Open in Chrome
 
 const items = ref(null)
 const indexing = ref(false)
@@ -18,6 +21,7 @@ const projectFilter = ref('all')
 const detail = ref(null)
 const detailError = ref(null)
 const tab = ref('preview')
+const browserName = ref(null)
 
 const selectedId = computed(() => route.query.id || null)
 
@@ -26,6 +30,7 @@ async function refresh() {
     const data = await apiFetch('/api/artifacts')
     items.value = data.artifacts
     indexing.value = data.indexing
+    browserName.value = data.browser || null
     backendDown.value = false
     // keep the open artifact current as new versions land
     const open = data.artifacts.find((a) => a.id === selectedId.value)
@@ -65,9 +70,14 @@ const projects = computed(() => {
   return Object.entries(counts).sort((a, b) => b[1] - a[1])
 })
 
+const byNewest = (a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')
+
+// pinned first in pin order (stable - the workdesk doesn't reshuffle as
+// artifacts get edited), then the rest newest first. The server sorts the
+// same way; sorting here too keeps optimistic pin toggles in place.
 const filtered = computed(() => {
   const needle = query.value.trim().toLowerCase()
-  return (items.value || []).filter((item) => {
+  const matches = (items.value || []).filter((item) => {
     if (kindFilter.value !== 'all' && item.kind !== kindFilter.value) return false
     if (projectFilter.value !== 'all' && item.project !== projectFilter.value) return false
     if (!needle) return true
@@ -75,18 +85,19 @@ const filtered = computed(() => {
       .filter(Boolean)
       .some((text) => text.toLowerCase().includes(needle))
   })
+  const pinned = matches.filter((item) => item.pinned).sort((a, b) => a.pinned_at.localeCompare(b.pinned_at))
+  return [...pinned, ...matches.filter((item) => !item.pinned).sort(byNewest)]
 })
+const pinnedCount = computed(() => (items.value || []).filter((item) => item.pinned).length)
 
 const STATUS_NOTES = {
   stale: 'The local copy may be behind the live version - a later edit could not be replayed or a file could not be captured.',
   missing: 'No local copy - the published source file was already gone when Watchtower indexed it.',
+  none: 'No local copy to preview - use the Open buttons above to view it.',
 }
 
 const canPreview = computed(
   () => detail.value && detail.value.kind === 'artifact' && detail.value.content_file
-)
-const localUrl = computed(() =>
-  canPreview.value ? `/api/artifacts/${detail.value.id}/content/${encodeURI(detail.value.content_file)}` : null
 )
 
 watch(canPreview, (can) => {
@@ -96,7 +107,115 @@ watch(selectedId, () => {
   tab.value = 'preview'
 })
 
-const ACTION_LABELS = { publish: 'published', edit: 'edited', delete: 'deleted' }
+// ---- workdesk actions: pin, open in the default browser ----
+
+const flash = ref(null)
+let flashTimer = null
+function showFlash(text, error = false) {
+  flash.value = { text, error }
+  clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => (flash.value = null), error ? 6000 : 2500)
+}
+
+async function togglePin(item) {
+  const pinned = !item.pinned
+  const apply = (state) => {
+    const listed = (items.value || []).find((entry) => entry.id === item.id)
+    for (const target of new Set([item, listed, detail.value?.id === item.id ? detail.value : null])) {
+      if (target) Object.assign(target, state)
+    }
+  }
+  const previous = { pinned: item.pinned, pinned_at: item.pinned_at }
+  apply({ pinned, pinned_at: pinned ? new Date().toISOString() : null })
+  try {
+    const result = await apiFetch(`/api/artifacts/${item.id}/pin`, { method: pinned ? 'PUT' : 'DELETE' })
+    apply({ pinned: result.pinned, pinned_at: result.pinned_at })
+  } catch (err) {
+    apply(previous)
+    showFlash(`Could not ${pinned ? 'pin' : 'unpin'}: ${err.message}`, true)
+  }
+}
+
+const browserLabel = computed(() => browserName.value || 'browser')
+
+// the artifact itself as a standalone page when there's a local HTML copy;
+// otherwise (docs, markdown, no copy captured) its claude.ai page
+function openTarget(item) {
+  if (item.kind === 'artifact' && /\.html?$/i.test(item.content_file || '')) return 'page'
+  return item.url ? 'claude' : null
+}
+
+function openTitle(item) {
+  const where = browserLabel.value
+  if (openTarget(item) === 'page') {
+    return item.content_status === 'stale'
+      ? `Open the local copy in ${where} (may be behind the live version)`
+      : `Open the page in ${where}`
+  }
+  return `No local page copy - open the claude.ai page in ${where}`
+}
+
+async function openInBrowser(item) {
+  const target = openTarget(item)
+  if (!target) return
+  try {
+    const result = await apiFetch(`/api/artifacts/${item.id}/open`, {
+      method: 'POST',
+      body: JSON.stringify({ target, theme: theme.value }),
+    })
+    showFlash(`Opened ${target === 'page' ? 'page' : 'claude.ai page'} in ${result.browser || 'your browser'}`)
+  } catch (err) {
+    showFlash(err.message === 'backend-unreachable' ? 'Backend not reachable' : err.message, true)
+  }
+}
+
+// ---- link an artifact by URL (its publishing transcript is gone) ----
+
+const linkOpen = ref(false)
+const linkForm = ref({ url: '', title: '', repo_id: '' })
+const linkBusy = ref(false)
+const linkError = ref(null)
+const linkInput = ref(null)
+const repos = ref([])
+
+async function toggleLinkForm() {
+  linkOpen.value = !linkOpen.value
+  linkError.value = null
+  if (!linkOpen.value) return
+  nextTick(() => linkInput.value?.focus())
+  if (!repos.value.length) {
+    try {
+      repos.value = (await apiFetch('/api/repos')).sort((a, b) => a.name.localeCompare(b.name))
+    } catch {
+      // the project picker is optional
+    }
+  }
+}
+
+async function submitLink() {
+  const url = linkForm.value.url.trim()
+  if (!url || linkBusy.value) return
+  linkBusy.value = true
+  linkError.value = null
+  try {
+    const body = { url }
+    if (linkForm.value.title.trim()) body.title = linkForm.value.title.trim()
+    if (linkForm.value.repo_id) body.repo_id = linkForm.value.repo_id
+    const result = await apiFetch('/api/artifacts/link', { method: 'POST', body: JSON.stringify(body) })
+    linkForm.value = { url: '', title: '', repo_id: '' }
+    linkOpen.value = false
+    await refresh()
+    select(result.id)
+    showFlash(result.created ? 'Artifact linked' : 'Already in the index - details updated')
+  } catch (err) {
+    linkError.value = err.message === 'backend-unreachable' ? 'Backend not reachable' : err.message
+  } finally {
+    linkBusy.value = false
+  }
+}
+
+const ACTION_LABELS = { publish: 'published', edit: 'edited', delete: 'deleted', link: 'linked' }
+const ACTION_COLORS = { delete: 'text-red-400', edit: 'text-amber-400', link: 'text-sky-400' }
 const shortSession = (id) => id.slice(0, 8)
 </script>
 
@@ -135,8 +254,68 @@ const shortSession = (id) => id.slice(0, 8)
           placeholder="Search titles, descriptions…"
           class="w-64 rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-coral/60 focus:outline-none"
         />
+        <button
+          class="rounded-md border px-2.5 py-1.5 text-xs transition-colors"
+          :class="linkOpen ? 'border-coral/50 bg-panel-2 text-coral' : 'border-edge text-slate-300 hover:border-slate-500'"
+          title="Add an artifact by its claude.ai link"
+          :aria-expanded="linkOpen"
+          @click="toggleLinkForm"
+        >
+          + Link artifact
+        </button>
       </div>
     </header>
+
+    <form
+      v-if="linkOpen"
+      class="mb-5 flex shrink-0 flex-wrap items-end gap-3 rounded-lg border border-edge bg-panel p-3"
+      @submit.prevent="submitLink"
+      @keydown.esc="linkOpen = false"
+    >
+      <label class="flex min-w-72 flex-1 flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+        claude.ai link
+        <input
+          ref="linkInput"
+          v-model="linkForm.url"
+          required
+          placeholder="https://claude.ai/artifact/…"
+          class="rounded-md border border-edge bg-navy px-3 py-1.5 font-mono text-xs normal-case tracking-normal text-slate-200 placeholder:text-slate-600 focus:border-coral/60 focus:outline-none"
+        />
+      </label>
+      <label class="flex w-64 flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+        Title (optional)
+        <input
+          v-model="linkForm.title"
+          maxlength="300"
+          class="rounded-md border border-edge bg-navy px-3 py-1.5 text-xs normal-case tracking-normal text-slate-200 focus:border-coral/60 focus:outline-none"
+        />
+      </label>
+      <label class="flex w-56 flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+        Project
+        <select
+          v-model="linkForm.repo_id"
+          class="rounded-md border border-edge bg-navy px-2 py-1.5 text-xs normal-case tracking-normal text-slate-300 focus:border-coral/60 focus:outline-none"
+        >
+          <option value="">Unassigned</option>
+          <option v-for="repo in repos" :key="repo.id" :value="repo.id">{{ repo.name }}</option>
+        </select>
+      </label>
+      <button
+        type="submit"
+        :disabled="linkBusy || !linkForm.url.trim()"
+        class="rounded-md border border-coral/50 bg-coral/10 px-3 py-1.5 text-xs font-medium text-coral hover:bg-coral/20 disabled:opacity-40"
+      >
+        {{ linkBusy ? 'Linking…' : 'Link' }}
+      </button>
+      <button type="button" class="px-1 py-1.5 text-xs text-slate-500 hover:text-slate-300" @click="linkOpen = false">
+        Cancel
+      </button>
+      <p class="basis-full text-[11px] text-slate-500">
+        For artifacts whose session transcript is gone. Watchtower can't sign in to claude.ai, so a linked artifact
+        has no preview, and its title is whatever you enter here.
+      </p>
+      <p v-if="linkError" class="basis-full text-xs text-red-400">{{ linkError }}</p>
+    </form>
 
     <div
       v-if="backendDown"
@@ -150,7 +329,9 @@ const shortSession = (id) => id.slice(0, 8)
         <section class="flex h-full min-h-0 flex-col pr-3">
           <h2 class="mb-3 flex shrink-0 items-baseline justify-between text-xs font-semibold uppercase tracking-widest text-slate-500">
             <span>Published</span>
-            <span v-if="items" class="font-mono normal-case tracking-normal text-slate-600">{{ filtered.length }} / {{ items.length }}</span>
+            <span v-if="items" class="font-mono normal-case tracking-normal text-slate-600">
+              <template v-if="pinnedCount">{{ pinnedCount }} pinned &middot; </template>{{ filtered.length }} / {{ items.length }}
+            </span>
           </h2>
           <div v-if="items === null" class="space-y-2">
             <div v-for="i in 5" :key="i" class="h-16 animate-pulse rounded-lg border border-edge bg-panel/50" />
@@ -162,15 +343,24 @@ const shortSession = (id) => id.slice(0, 8)
             {{ items.length ? 'Nothing matches the filters' : indexing ? 'Indexing session transcripts…' : 'No artifacts published yet' }}
           </p>
           <ul v-else class="min-h-0 flex-1 space-y-1.5 overflow-auto pr-1">
-            <li v-for="item in filtered" :key="item.id">
-              <button
-                class="w-full rounded-lg border px-3 py-2.5 text-left transition-colors"
-                :class="
+            <template v-for="(item, i) in filtered" :key="item.id">
+            <li v-if="i > 0 && !item.pinned && filtered[i - 1].pinned" class="py-1" aria-hidden="true">
+              <div class="border-t border-edge/70" />
+            </li>
+            <li class="group">
+              <div
+                role="button"
+                tabindex="0"
+                class="w-full cursor-pointer rounded-lg border px-3 py-2.5 text-left transition-colors focus:outline-none focus-visible:border-coral/60"
+                :class="[
                   item.id === selectedId
                     ? 'border-coral/50 bg-panel-2'
-                    : 'border-edge bg-panel hover:border-slate-600'
-                "
+                    : 'border-edge bg-panel hover:border-slate-600',
+                  item.pinned && item.id !== selectedId ? 'border-l-coral/60' : '',
+                ]"
                 @click="select(item.id)"
+                @keydown.enter.self.prevent="select(item.id)"
+                @keydown.space.self.prevent="select(item.id)"
               >
                 <div class="flex items-center gap-2">
                   <span v-if="item.favicon" class="text-sm leading-none">{{ item.favicon }}</span>
@@ -181,8 +371,31 @@ const shortSession = (id) => id.slice(0, 8)
                   >
                     {{ item.title }}
                   </span>
+                  <span class="ml-auto flex shrink-0 items-center gap-0.5">
+                    <button
+                      v-if="openTarget(item)"
+                      class="rounded p-1 text-slate-500 opacity-0 transition hover:bg-panel-2 hover:text-slate-200 focus-visible:opacity-100 group-hover:opacity-100"
+                      :title="openTitle(item)"
+                      :aria-label="`Open ${item.title} in ${browserLabel}`"
+                      @click.stop="openInBrowser(item)"
+                    >
+                      <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                      </svg>
+                    </button>
+                    <button
+                      class="rounded p-1 transition hover:bg-panel-2 focus-visible:opacity-100"
+                      :class="item.pinned ? 'text-coral' : 'text-slate-500 opacity-0 hover:text-slate-200 group-hover:opacity-100'"
+                      :title="item.pinned ? 'Unpin' : 'Pin to top'"
+                      :aria-label="item.pinned ? `Unpin ${item.title}` : `Pin ${item.title} to top`"
+                      :aria-pressed="item.pinned"
+                      @click.stop="togglePin(item)"
+                    >
+                      <PinIcon :filled="item.pinned" class="h-3.5 w-3.5" />
+                    </button>
+                  </span>
                   <span
-                    class="ml-auto shrink-0 rounded border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide"
+                    class="shrink-0 rounded border px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide"
                     :class="item.kind === 'doc' ? 'border-violet-500/40 text-violet-300' : 'border-sky-500/40 text-sky-300'"
                   >
                     {{ item.kind_label }}
@@ -193,12 +406,14 @@ const shortSession = (id) => id.slice(0, 8)
                   <span>&middot;</span>
                   <span class="shrink-0">{{ relative(item.updated_at) }}</span>
                   <span class="ml-auto shrink-0 font-mono text-[10px] text-slate-600">
-                    {{ item.op_count }} ver{{ item.op_count === 1 ? '' : 's' }}
+                    <template v-if="item.op_count">{{ item.op_count }} ver{{ item.op_count === 1 ? '' : 's' }}</template>
+                    <template v-else>linked</template>
                     <template v-if="item.session_count > 1"> &middot; {{ item.session_count }} sessions</template>
                   </span>
                 </div>
-              </button>
+              </div>
             </li>
+            </template>
           </ul>
         </section>
       </template>
@@ -223,16 +438,24 @@ const shortSession = (id) => id.slice(0, 8)
                   <p v-if="detail.description" class="mt-1 text-xs leading-relaxed text-slate-400">{{ detail.description }}</p>
                 </div>
                 <div class="flex shrink-0 items-center gap-2">
-                  <a
-                    v-if="localUrl && !/\.(md|markdown)$/i.test(detail.content_file)"
-                    :href="localUrl"
-                    target="_blank"
-                    rel="noopener"
-                    class="rounded-md border border-edge px-2.5 py-1.5 text-xs text-slate-300 hover:border-slate-500"
-                    title="Open the local copy in a new window"
+                  <button
+                    class="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors"
+                    :class="detail.pinned ? 'border-coral/50 text-coral hover:bg-coral/10' : 'border-edge text-slate-300 hover:border-slate-500'"
+                    :title="detail.pinned ? 'Unpin from the top of the list' : 'Pin to the top of the list'"
+                    :aria-pressed="detail.pinned"
+                    @click="togglePin(detail)"
                   >
-                    Local copy ↗
-                  </a>
+                    <PinIcon :filled="detail.pinned" class="h-3.5 w-3.5" />
+                    {{ detail.pinned ? 'Pinned' : 'Pin' }}
+                  </button>
+                  <button
+                    v-if="openTarget(detail)"
+                    class="rounded-md border border-edge px-2.5 py-1.5 text-xs text-slate-300 hover:border-slate-500"
+                    :title="openTitle(detail)"
+                    @click="openInBrowser(detail)"
+                  >
+                    Open in {{ browserLabel }} ↗
+                  </button>
                   <a
                     v-if="detail.url"
                     :href="detail.url"
@@ -261,7 +484,7 @@ const shortSession = (id) => id.slice(0, 8)
                 <div>
                   <dt class="text-[10px] uppercase tracking-wide text-slate-600">Versions / sharing</dt>
                   <dd class="text-slate-300">
-                    {{ detail.op_count }}<template v-if="detail.sharing"> &middot; {{ detail.sharing }}</template>
+                    {{ detail.op_count || 'linked' }}<template v-if="detail.sharing"> &middot; {{ detail.sharing }}</template>
                     <span v-if="detail.deleted" class="ml-1 text-red-400">deleted</span>
                   </dd>
                 </div>
@@ -271,7 +494,8 @@ const shortSession = (id) => id.slice(0, 8)
               </p>
               <p
                 v-if="STATUS_NOTES[detail.content_status] && detail.kind === 'artifact'"
-                class="mt-2 text-[11px] text-amber-400/90"
+                class="mt-2 text-[11px]"
+                :class="detail.content_status === 'none' ? 'text-slate-500' : 'text-amber-400/90'"
               >
                 {{ STATUS_NOTES[detail.content_status] }}
               </p>
@@ -296,6 +520,28 @@ const shortSession = (id) => id.slice(0, 8)
               <span v-if="!canPreview && detail.kind === 'doc'" class="ml-auto text-slate-500">
                 Docs live in the docs service - open them in Claude
               </span>
+              <div
+                v-if="tab === 'preview' && canPreview"
+                class="-mt-1 ml-auto flex overflow-hidden rounded-md border border-edge"
+                role="radiogroup"
+                aria-label="Preview theme"
+              >
+                <button
+                  v-for="(t, i) in ARTIFACT_THEMES"
+                  :key="t.value"
+                  role="radio"
+                  :aria-checked="theme === t.value"
+                  class="px-2.5 py-1 text-[11px] transition-colors"
+                  :class="[
+                    i ? 'border-l border-edge' : '',
+                    theme === t.value ? 'bg-coral/10 text-coral' : 'text-slate-400 hover:text-slate-200',
+                  ]"
+                  :title="t.hint"
+                  @click="theme = t.value"
+                >
+                  {{ t.label }}
+                </button>
+              </div>
             </div>
 
             <div class="min-h-0 flex-1">
@@ -307,19 +553,23 @@ const shortSession = (id) => id.slice(0, 8)
                   class="flex items-baseline gap-3 border-b border-edge/40 py-1.5 text-xs last:border-0"
                 >
                   <span class="w-28 shrink-0 font-mono text-[10px] text-slate-600" :title="op.ts">{{ stamp(op.ts) }}</span>
-                  <span class="w-16 shrink-0" :class="op.action === 'delete' ? 'text-red-400' : op.action === 'edit' ? 'text-amber-400' : 'text-emerald-400'">
+                  <span class="w-16 shrink-0" :class="ACTION_COLORS[op.action] || 'text-emerald-400'">
                     {{ ACTION_LABELS[op.action] || op.action }}
                   </span>
                   <span class="min-w-0 flex-1 truncate text-slate-300" :title="op.label || op.version">
                     {{ op.label || op.version || '' }}
                   </span>
                   <RouterLink
+                    v-if="op.session_id"
                     :to="{ path: '/activity', query: { session: op.session_id } }"
                     class="shrink-0 truncate text-[10px] text-slate-500 hover:text-coral"
                     :title="op.session_title || op.session_id"
                   >
                     {{ op.session_title ? op.session_title.slice(0, 34) : shortSession(op.session_id) }}
                   </RouterLink>
+                  <span v-else class="shrink-0 text-[10px] text-slate-600" title="Added by its claude.ai link - no session">
+                    by link
+                  </span>
                 </li>
               </ol>
             </div>
@@ -327,5 +577,21 @@ const shortSession = (id) => id.slice(0, 8)
         </section>
       </template>
     </SplitPane>
+
+    <Transition
+      enter-from-class="translate-y-2 opacity-0"
+      enter-active-class="transition duration-150"
+      leave-to-class="opacity-0"
+      leave-active-class="transition duration-300"
+    >
+      <div
+        v-if="flash"
+        role="status"
+        class="fixed bottom-5 right-5 z-50 max-w-sm rounded-md border px-3.5 py-2 text-xs shadow-lg"
+        :class="flash.error ? 'border-red-500/40 bg-red-950/90 text-red-200' : 'border-edge bg-panel-2 text-slate-200'"
+      >
+        {{ flash.text }}
+      </div>
+    </Transition>
   </div>
 </template>

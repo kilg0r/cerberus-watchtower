@@ -11,6 +11,12 @@ record kinds we summarize are ever parsed.
 Besides the session summary, each pass yields the session's artifact
 operations (claude.ai artifact publishes/edits and Claude Docs creates/updates)
 as resolved tool_use/tool_result pairs, for `watchtower.artifacts` to index.
+
+Each state also tracks what is running right now, for the Processes view:
+`inflight` holds tool calls whose result hasn't been written yet, and
+`background` holds calls that returned "running in background" (Bash/
+PowerShell/Monitor tasks, background agents) until their
+<task-notification> reports a final status.
 """
 
 import json
@@ -54,6 +60,29 @@ _TOOL_USE = b'"type":"tool_use"'
 _TOOL_RESULT = b'"tool_result"'
 _USER = b'"type":"user"'
 _AI_TITLE = b'"aiTitle"'
+_TASK_NOTIFICATION = b"<task-notification>"
+
+# A tool_result's id key. Inside a JSON string every quote is escaped
+# (\"tool_use_id\":\"), so this only matches a real key, never an id quoted in
+# some tool's output. The key's position varies (error results put it after
+# the content), so it isn't anchored to the block header.
+_RESULT_ID_RE = re.compile(rb'"tool_use_id":"([A-Za-z0-9_-]+)"')
+_NOTIFICATION_RE = re.compile(rb"<task-notification>(.*?)</task-notification>")
+_NOTIFY_FIELD_RE = re.compile(rb"<(task-id|tool-use-id|status|output-file)>(.*?)</\1>")
+_BG_TASK_RE = re.compile(r"running in background with ID: ([A-Za-z0-9_-]+)")
+_BG_OUTPUT_RE = re.compile(r"Output is being written to: (\S+?\.output)")
+_AGENT_ID_RE = re.compile(r"agentId: ([A-Za-z0-9_-]+)")
+_TASK_ID_RE = re.compile(r"\(task ([A-Za-z0-9_-]+)|Task ID: ([A-Za-z0-9_-]+)")
+_WORKFLOW_NAME_RE = re.compile(r"\bname\s*:\s*['\"]([^'\"]{1,80})['\"]")
+_WORKFLOW_RUN_RE = re.compile(r"workflows[\\/]+(wf_[A-Za-z0-9_-]+)")
+_FINAL_STATUSES = {b"completed", b"failed", b"killed", b"stopped", b"cancelled", b"error"}
+# tools whose result can say "started in the background": the result line is
+# parsed for these only (they are small - a launch notice, not output)
+_BACKGROUND_TOOLS = {"Monitor", "Workflow", "Agent"}
+_SHELL_TOOLS = {"Bash", "PowerShell"}
+MAX_INFLIGHT = 64  # per transcript; older entries are dropped (crashed turns)
+MAX_BACKGROUND = 48
+BRIEF_CHARS = 400
 
 
 def _safe_loads(line: str | bytes) -> dict | None:
@@ -109,6 +138,71 @@ def session_id_for(path: Path) -> str:
     return subagents.parent.name if subagents else path.stem
 
 
+def _read_meta(path: Path) -> dict:
+    """agent-<id>.meta.json: agentType, description, toolUseId (the spawning
+    Agent call), requestShape, workflowPhase, model. Small; {} if absent."""
+    try:
+        meta = json.loads(path.with_name(path.stem + ".meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    keep = ("agentType", "description", "toolUseId", "requestShape", "workflowPhase", "model", "isFork")
+    return {k: meta[k] for k in keep if k in meta} if isinstance(meta, dict) else {}
+
+
+def _clip(value, limit: int = BRIEF_CHARS) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def tool_brief(name: str, tool_input: dict) -> dict:
+    """The few fields of a tool call worth showing while it runs: a one-line
+    label (usually the call's own description) and the detail behind it
+    (command, file, pattern, url). Bounded - inputs can be megabytes."""
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    get = tool_input.get
+    label = _clip(get("description"), 160)
+    detail = None
+    extra: dict = {}
+    if name in _SHELL_TOOLS or name == "Monitor":
+        detail = _clip(get("command"))
+        if get("run_in_background"):
+            extra["background"] = True
+    elif name in ("Read", "Write", "Edit", "NotebookEdit"):
+        detail = _clip(get("file_path") or get("notebook_path"))
+    elif name == "Grep":
+        detail = _clip(" ".join(filter(None, (get("pattern"), get("path") or get("glob")))))
+    elif name == "Glob":
+        detail = _clip(get("pattern"))
+    elif name == "WebFetch":
+        detail = _clip(get("url"))
+    elif name == "WebSearch":
+        detail = _clip(get("query"))
+    elif name == "Agent":
+        extra["agent_type"] = _clip(get("subagent_type"), 60) or "general-purpose"
+        detail = _clip(get("prompt"), 240)
+        if get("run_in_background"):
+            extra["background"] = True
+    elif name == "Workflow":
+        script = get("script") if isinstance(get("script"), str) else ""
+        match = _WORKFLOW_NAME_RE.search(script[:4000])
+        label = label or _clip(get("name"), 80) or (match.group(1) if match else None)
+    elif name == "Skill":
+        detail = _clip(get("skill"), 80)
+    elif name == "AskUserQuestion":
+        questions = get("questions")
+        if isinstance(questions, list) and questions and isinstance(questions[0], dict):
+            detail = _clip(questions[0].get("question"), 240)
+    elif name.startswith("mcp__"):
+        # first short string argument says what the call is about
+        for value in tool_input.values():
+            if isinstance(value, str) and 0 < len(value) <= 200:
+                detail = _clip(value, 200)
+                break
+    return {"label": label, "detail": detail, **extra}
+
+
 @dataclass
 class TranscriptState:
     """Running summary of one transcript file, advanced incrementally."""
@@ -129,14 +223,31 @@ class TranscriptState:
     files_edited: list[str] = field(default_factory=list)
     pending: dict[str, dict] = field(default_factory=dict)  # artifact tool_use id -> op
     resolved: set[str] = field(default_factory=set)
+    # live work: tool_use id -> brief, insertion (= start) ordered
+    inflight: dict[str, dict] = field(default_factory=dict)
+    background: dict[str, dict] = field(default_factory=dict)
+    # subagents: the <agent>.meta.json written beside the transcript
+    meta: dict = field(default_factory=dict)
 
     @classmethod
     def for_path(cls, path: Path) -> "TranscriptState":
+        is_subagent = _subagents_dir(path) is not None
         return cls(
             path=path,
             session_id=session_id_for(path),
-            is_subagent=_subagents_dir(path) is not None,
+            is_subagent=is_subagent,
+            meta=_read_meta(path) if is_subagent else {},
         )
+
+    @property
+    def agent_id(self) -> str | None:
+        return self.path.stem.removeprefix("agent-") if self.is_subagent else None
+
+    @property
+    def workflow_run(self) -> str | None:
+        """wf_<id> for workflow-agent transcripts (subagents/workflows/<run>/)."""
+        parent = self.path.parent
+        return parent.name if self.is_subagent and parent.parent.name == "workflows" else None
 
     def summary(self) -> dict | None:
         if self.first_ts is None:
@@ -151,6 +262,14 @@ class TranscriptState:
             "tool_counts": dict(self.tool_counts),
             "files_edited": list(self.files_edited),
             "last_prompt": self.last_prompt,
+        }
+
+    def live(self) -> dict:
+        """What this transcript has running: copies, safe to hand out."""
+        strip = lambda e: {k: v for k, v in e.items() if k != "bg_candidate"}  # noqa: E731
+        return {
+            "inflight": [strip(e) for e in list(self.inflight.values())],
+            "background": [dict(e) for e in list(self.background.values())],
         }
 
     # ------------------------------------------------------------ advancing
@@ -207,22 +326,37 @@ class TranscriptState:
                 self.title = record["aiTitle"]
             return
 
+        if self.background and _TASK_NOTIFICATION in raw:
+            self._notifications(raw)
+
         need_context = self.first_ts is None or self.start_cwd is None
         is_tool_use = _TOOL_USE in raw
         has_result = _TOOL_RESULT in raw
         # tool_result lines are the huge ones - parse only those resolving a
-        # pending artifact call; plain user lines are prompts (small, rare)
+        # pending artifact call or a launch that may have gone to the
+        # background; plain user lines are prompts (small, rare)
         is_prompt = _USER in raw and not has_result
         is_result = (
             has_result
             and bool(self.pending)
             and any(tool_id.encode() in raw for tool_id in self.pending)
         )
-        if not (need_context or is_tool_use or is_prompt or is_result):
+        launches: dict[str, dict] = {}
+        if has_result and self.inflight:
+            for match in _RESULT_ID_RE.finditer(raw):
+                tool_id = match.group(1).decode()
+                entry = self.inflight.pop(tool_id, None)
+                if entry is not None and entry.get("bg_candidate"):
+                    launches[tool_id] = entry
+        if not (need_context or is_tool_use or is_prompt or is_result or launches):
             return
         record = _safe_loads(raw)
-        if not record or record.get("isSidechain"):
+        # subagent transcripts are all sidechain; in a main transcript,
+        # sidechain records are (older versions') inlined subagent traffic
+        if not record or (record.get("isSidechain") and not self.is_subagent):
             return
+        if launches:
+            self._background_launches(record, launches)
 
         ts = record.get("timestamp")
         if ts:
@@ -244,12 +378,16 @@ class TranscriptState:
                     self.last_prompt = text[:160]
 
     def _tool_uses(self, record: dict, content: list) -> None:
+        spawn_id = self.meta.get("toolUseId")
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
+            if spawn_id and block.get("id") == spawn_id:
+                continue  # a fork's copy of the parent's Agent call that spawned it
             name = block.get("name", "?")
             self.tool_counts[name] = self.tool_counts.get(name, 0) + 1
             tool_input = block.get("input") or {}
+            self._track(block.get("id"), name, tool_input, record.get("timestamp"))
             if name in FILE_EDIT_TOOLS:
                 file_path = tool_input.get("file_path")
                 if file_path and file_path not in self.files_edited:
@@ -265,6 +403,78 @@ class TranscriptState:
                         "cwd": record.get("cwd"),
                         "session_id": self.session_id,
                     }
+
+    # ------------------------------------------------------------ live work
+
+    def _track(self, tool_id: str | None, name: str, tool_input: dict, ts: str | None) -> None:
+        if not tool_id:
+            return
+        brief = tool_brief(name, tool_input)
+        self.inflight[tool_id] = {
+            "id": tool_id,
+            "tool": name,
+            **brief,
+            "ts": ts,
+            "bg_candidate": name in _BACKGROUND_TOOLS or (name in _SHELL_TOOLS and bool(brief.get("background"))),
+        }
+        while len(self.inflight) > MAX_INFLIGHT:  # results never written (crash, kill)
+            self.inflight.pop(next(iter(self.inflight)))
+
+    def _background_launches(self, record: dict, launches: dict[str, dict]) -> None:
+        """Resolved calls that may have started background work: keep the ones
+        whose result says so, keyed by tool id, until a notification ends them."""
+        content = (record.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            entry = launches.get(block.get("tool_use_id"))
+            if entry is None or block.get("is_error"):
+                continue
+            text = _result_text(block.get("content"))
+            task_id = output_file = None
+            if entry["tool"] in _SHELL_TOOLS:
+                match = _BG_TASK_RE.search(text)
+                task_id = match.group(1) if match else None
+                found = _BG_OUTPUT_RE.search(text)
+                output_file = found.group(1) if found else None
+            elif entry["tool"] == "Agent":
+                if "launched" in text.lower():  # a finished foreground agent also reports its id
+                    match = _AGENT_ID_RE.search(text)
+                    task_id = match.group(1) if match else None
+            else:  # Monitor, Workflow
+                match = _TASK_ID_RE.search(text)
+                task_id = (match.group(1) or match.group(2)) if match else None
+                run = _WORKFLOW_RUN_RE.search(text)
+                if run:
+                    entry = {**entry, "workflow_run": run.group(1)}
+            if not task_id:
+                continue
+            self.background[entry["id"]] = {
+                **{k: v for k, v in entry.items() if k != "bg_candidate"},
+                "task_id": task_id,
+                "output_file": output_file,
+                "launched_at": record.get("timestamp") or entry.get("ts"),
+            }
+            while len(self.background) > MAX_BACKGROUND:
+                self.background.pop(next(iter(self.background)))
+
+    def _notifications(self, raw: bytes) -> None:
+        """<task-notification> with a final status ends a background entry,
+        matched by tool-use id or task id. Read straight from the bytes."""
+        for block in _NOTIFICATION_RE.finditer(raw):
+            fields = {key: value for key, value in _NOTIFY_FIELD_RE.findall(block.group(1))}
+            if fields.get(b"status") not in _FINAL_STATUSES:
+                continue
+            tool_id = fields.get(b"tool-use-id", b"").decode(errors="replace")
+            if tool_id in self.background:
+                del self.background[tool_id]
+                continue
+            task_id = fields.get(b"task-id", b"").decode(errors="replace")
+            for key, entry in list(self.background.items()):
+                if task_id and entry.get("task_id") == task_id:
+                    del self.background[key]
 
     def _tool_results(self, record: dict, content: list, ops: list[dict]) -> None:
         for block in content:

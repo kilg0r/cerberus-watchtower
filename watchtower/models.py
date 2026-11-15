@@ -94,6 +94,18 @@ class Artifact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 
+class ArtifactPin(Base):
+    """An artifact pinned to the top of the Artifacts view. A table of its own
+    (not a column on `artifacts`) because create_all never alters existing
+    tables, and pins are user state that must survive a re-index."""
+
+    __tablename__ = "artifact_pins"
+
+    artifact_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    position: Mapped[int] = mapped_column(Integer)  # sort key; new pins go last
+    pinned_at: Mapped[datetime] = mapped_column(DateTime)
+
+
 class ArtifactOp(Base):
     """One publish/edit/delete of an artifact, attributed to the session that
     made it. tool_use_id makes ingestion idempotent across rescans."""

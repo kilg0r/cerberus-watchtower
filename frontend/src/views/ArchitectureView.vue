@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { apiFetch } from '../composables/useApi'
 import { provideArchContext } from '../composables/useArchContext'
 import { useEdgeResize } from '../composables/useEdgeResize'
 import ArchGraph from '../components/ArchGraph.vue'
+import ArchGraph3D from '../components/ArchGraph3D.vue'
 import DataFlowTable from '../components/DataFlowTable.vue'
 import DriftPanel from '../components/DriftPanel.vue'
 import FlowInspector from '../components/FlowInspector.vue'
@@ -49,6 +50,16 @@ const showDrift = ref(false)
 const narrative = ref(null)
 const narrating = ref(false)
 const cache = new Map()
+// 3D map by default; the 2D dagre graph stays one click away (and is the
+// fallback when WebGL isn't available)
+const VIEW_KEY = 'watchtower:arch:view'
+const view3d = ref(localStorage.getItem(VIEW_KEY) !== '2d')
+const webglFailed = ref(false)
+watch(view3d, (on) => {
+  localStorage.setItem(VIEW_KEY, on ? '3d' : '2d')
+  selectedNode.value = null
+})
+const show3d = computed(() => view3d.value && !webglFailed.value)
 
 // shared lookup context for FlowNode/MethodNode drilling (dotnet only)
 provideArchContext(arch)
@@ -277,6 +288,27 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </p>
       </div>
       <div class="flex items-center gap-2">
+        <div
+          v-if="!isOverview"
+          class="flex overflow-hidden rounded-md border border-edge text-xs"
+          :title="webglFailed ? 'WebGL is not available here - showing the 2D graph' : 'Graph view'"
+        >
+          <button
+            class="px-3 py-1.5 transition-colors disabled:opacity-40"
+            :class="show3d ? 'bg-coral/10 text-coral' : 'text-slate-400 hover:text-slate-200'"
+            :disabled="webglFailed"
+            @click="view3d = true"
+          >
+            3D
+          </button>
+          <button
+            class="border-l border-edge px-3 py-1.5 transition-colors"
+            :class="!show3d ? 'bg-coral/10 text-coral' : 'text-slate-400 hover:text-slate-200'"
+            @click="view3d = false"
+          >
+            2D
+          </button>
+        </div>
         <select
           v-model="selectedId"
           class="rounded-md border border-edge bg-panel-2 px-3 py-1.5 text-xs text-slate-200 focus:border-coral/60 focus:outline-none"
@@ -322,7 +354,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <div v-else-if="isOverview && overview" class="min-h-0 flex-1 space-y-8 overflow-auto pr-1">
       <section v-for="[group, entries] in groupedOverview" :key="group">
         <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">{{ group }}</h2>
-        <div class="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+        <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(340px,1fr))]">
           <button
             v-for="entry in entries"
             :key="entry.repo_id"
@@ -417,7 +449,20 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       >
         <template #first>
         <div class="relative h-full min-h-0">
+        <ArchGraph3D
+          v-if="show3d"
+          :nodes="visibleNodes"
+          :edges="visibleEdges"
+          :mode="focusId ? 'focus' : 'overview'"
+          :focus-id="focusId"
+          :legend="LEGENDS[stack] || null"
+          height-class="h-full"
+          @select="selectNode($event)"
+          @focus="setFocus($event)"
+          @unsupported="webglFailed = true"
+        />
         <ArchGraph
+          v-else
           :nodes="visibleNodes"
           :edges="visibleEdges"
           :mode="focusId ? 'focus' : 'overview'"

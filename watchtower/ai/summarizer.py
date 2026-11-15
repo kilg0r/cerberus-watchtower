@@ -20,6 +20,23 @@ from ..scanners.git_scanner import MAX_UNTRACKED_BYTES, _git, _parse_status
 MAX_DIFF_BYTES = 80 * 1024
 CLAUDE_TIMEOUT_SECONDS = 120
 
+# A headless summary is a pure text job, isolated from the interactive setup:
+# - no hooks: global Stop hooks (e.g. the PayTable wrap-up check, which greps
+#   the payload for "paytable") block the stop, and the reply to the hook comes
+#   back as the "summary". Watchtower's own activity hooks would also log these
+#   runs as agent sessions.
+# - no MCP servers and no tools: nothing to start (serena etc. cost ~10s and
+#   RAM per call) and nothing it could do besides answer.
+# - no transcript: these runs aren't sessions worth indexing.
+# `--bare` would do the first two but only accepts ANTHROPIC_API_KEY, never
+# the OAuth login this machine uses.
+ISOLATION_FLAGS = (
+    "--settings", '{"disableAllHooks": true}',
+    "--strict-mcp-config",
+    "--tools", "",
+    "--no-session-persistence",
+)
+
 PROMPT = (
     "You are summarizing pending (uncommitted) changes in a git repository so the "
     "developer can review them before committing. The full diff follows on stdin. "
@@ -85,7 +102,7 @@ def run_claude(diff: str, prompt: str = PROMPT) -> str:
         raise SummarizerError("claude CLI not found on PATH")
     try:
         result = subprocess.run(
-            [claude, "-p", prompt],
+            [claude, "-p", prompt, *ISOLATION_FLAGS],
             input=diff,
             capture_output=True,
             text=True,

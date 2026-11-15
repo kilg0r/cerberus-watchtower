@@ -92,3 +92,26 @@ def test_claude_failure_is_not_cached(session, monkeypatch):
     result = get_or_create_summary(session, "test", "some diff")
     assert result["cached"] is False  # failure was not cached; claude ran again
     assert result["summary"] == "recovered summary"
+
+
+def test_run_claude_isolates_the_headless_run(monkeypatch):
+    """Global Stop hooks (the PayTable wrap-up check) block a headless run's
+    stop and the reply to the hook came back as the "summary" - every call
+    must disable hooks, MCP servers and tools."""
+    import subprocess
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="a narrative\n", stderr="")
+
+    monkeypatch.setattr(summarizer.shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(summarizer.subprocess, "run", fake_run)
+    assert summarizer.run_claude("payTable.Payments structure", prompt="explain") == "a narrative"
+    args = calls[0]
+    assert args[:3] == ["claude", "-p", "explain"]
+    settings = args[args.index("--settings") + 1]
+    assert '"disableAllHooks": true' in settings
+    assert "--strict-mcp-config" in args and "--no-session-persistence" in args
+    assert args[args.index("--tools") + 1] == ""

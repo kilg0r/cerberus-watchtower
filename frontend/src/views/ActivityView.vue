@@ -118,7 +118,7 @@ const eventDetail = (event) => (isArtifactEvent(event) ? event.artifact_title ||
         <p v-else-if="!sessions.length" class="rounded-lg border border-dashed border-edge bg-panel/40 px-6 py-10 text-center text-sm text-slate-500">
           {{ indexing ? 'Indexing session transcripts…' : 'No sessions in the last 3 days' }}
         </p>
-        <div v-else class="grid min-h-0 flex-1 content-start items-start gap-3 overflow-auto pr-1 2xl:grid-cols-2">
+        <div v-else class="grid min-h-0 flex-1 content-start items-start gap-3 overflow-auto pr-1 [grid-template-columns:repeat(auto-fill,minmax(440px,1fr))]">
           <SessionCard
             v-for="session in sessions"
             :key="session.session_id"

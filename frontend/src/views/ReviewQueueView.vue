@@ -72,7 +72,7 @@ usePolling(() => (now.value = Date.now()), 10_000)
     <EmptyState v-else-if="queue !== null && queue.length === 0" />
 
     <!-- side-by-side group columns on wide screens (1080p+) -->
-    <div v-else-if="queue !== null" class="grid min-h-0 flex-1 content-start items-start gap-8 overflow-auto pr-1 2xl:grid-cols-2">
+    <div v-else-if="queue !== null" class="grid min-h-0 flex-1 content-start items-start gap-8 overflow-auto pr-1 [grid-template-columns:repeat(auto-fill,minmax(600px,1fr))]">
       <section v-for="group in groups" :key="group.key">
         <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
           {{ group.label }}

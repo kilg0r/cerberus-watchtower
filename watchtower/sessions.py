@@ -38,6 +38,7 @@ class SessionIndex:
     def __init__(self) -> None:
         self._states: dict[Path, TranscriptState] = {}
         self._refresh_lock = threading.Lock()
+        self._carried_ops: list[dict] = []  # resolved by on-demand advances (states_for)
         self.passes = 0  # completed full refresh passes
 
     @property
@@ -48,7 +49,7 @@ class SessionIndex:
         """Advance every transcript; return artifact ops resolved this pass."""
         with self._refresh_lock:
             paths = iter_transcripts()
-            ops: list[dict] = []
+            ops, self._carried_ops = self._carried_ops, []
             for path in paths:
                 state = self._states.get(path)
                 if state is None:
@@ -97,6 +98,26 @@ class SessionIndex:
             if not state.is_subagent and state.session_id == session_id:
                 return state.summary()
         return None
+
+    def states_for(self, session_ids: set[str], advance: bool = False) -> dict[str, list[TranscriptState]]:
+        """Main + subagent states of the given sessions (main first). With
+        `advance`, catch them up first so live views aren't a refresh behind -
+        skipped if the background pass holds the lock (it is advancing them)."""
+        grouped: dict[str, list[TranscriptState]] = {}
+        for state in self._states_snapshot():
+            if state.session_id in session_ids:
+                grouped.setdefault(state.session_id, []).append(state)
+        if advance and self._refresh_lock.acquire(blocking=False):
+            try:
+                for states in grouped.values():
+                    for state in states:
+                        # ops resolve exactly once - hand them to the next pass
+                        self._carried_ops.extend(state.advance())
+            finally:
+                self._refresh_lock.release()
+        for states in grouped.values():
+            states.sort(key=lambda s: s.is_subagent)
+        return grouped
 
     def titles(self, session_ids: set[str]) -> dict[str, str | None]:
         return {

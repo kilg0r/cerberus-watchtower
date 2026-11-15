@@ -15,6 +15,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path.home() / ".cerberus-watchtower"
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 8765
+SERVER_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
 _SKIP_DIR_PREFIXES = ("_", ".")

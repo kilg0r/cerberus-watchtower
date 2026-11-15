@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import cytoscape from 'cytoscape'
 import dagre from 'cytoscape-dagre'
+import { folderColorMap, legendFor, nodeColor as colorForNode } from '../utils/archColors'
 
 cytoscape.use(dagre)
 
@@ -24,58 +25,9 @@ const container = ref(null)
 let cy = null
 let resizeObserver = null
 
-const FOLDER_COLORS = {
-  presentation: '#38bdf8',
-  core: '#34d399',
-  infrastructure: '#fbbf24',
-  tests: '#64748b',
-}
-// colors handed out to solution folders beyond the canonical four, assigned
-// in sorted order so a given folder name keeps its color across rescans
-const EXTRA_FOLDER_PALETTE = ['#f472b6', '#22d3ee', '#a3e635', '#fb923c', '#e879f9', '#2dd4bf']
-const KIND_COLORS = {
-  view: '#38bdf8',
-  component: '#a78bfa',
-  store: '#34d399',
-  module: '#38bdf8',
-  package: '#34d399',
-}
-const DEFAULT_COLOR = '#a78bfa'
-
-const DEFAULT_LEGEND = [
-  { label: 'presentation', color: '#38bdf8' },
-  { label: 'core', color: '#34d399' },
-  { label: 'infrastructure', color: '#fbbf24' },
-  { label: 'tests', color: '#64748b' },
-  { label: 'other', color: '#a78bfa' },
-]
-
-const folderColors = computed(() => {
-  const map = { ...FOLDER_COLORS }
-  const extras = [...new Set(props.nodes.map((n) => n.folder).filter((f) => f && !(f in map)))].sort()
-  extras.forEach((f, i) => {
-    map[f] = EXTRA_FOLDER_PALETTE[i % EXTRA_FOLDER_PALETTE.length]
-  })
-  return map
-})
-
-// legend derived from the folders actually present; 'other' only when some
-// node has no solution folder at all
-const computedLegend = computed(() => {
-  if (props.legend) return props.legend
-  const present = new Set(props.nodes.map((n) => n.folder).filter(Boolean))
-  if (!present.size) return DEFAULT_LEGEND
-  const items = Object.entries(folderColors.value)
-    .filter(([label]) => present.has(label))
-    .map(([label, color]) => ({ label, color }))
-  if (props.nodes.some((n) => !n.folder)) items.push({ label: 'other', color: DEFAULT_COLOR })
-  return items
-})
-
-function nodeColor(n) {
-  if (n.folder) return folderColors.value[n.folder]
-  return KIND_COLORS[n.kind] || DEFAULT_COLOR
-}
+const folderColors = computed(() => folderColorMap(props.nodes))
+const computedLegend = computed(() => legendFor(props.nodes, folderColors.value, props.legend))
+const nodeColor = (n) => colorForNode(n, folderColors.value)
 
 const MODES = {
   overview: { font: 9, node: 18, nodeSep: 18, rankSep: 90 },

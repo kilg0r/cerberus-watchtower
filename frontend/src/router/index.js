@@ -7,6 +7,11 @@ const routes = [
   { path: '/review', name: 'review', component: ReviewQueueView },
   { path: '/activity', name: 'activity', component: ActivityView },
   {
+    path: '/processes',
+    name: 'processes',
+    component: () => import('../views/ProcessesView.vue'),
+  },
+  {
     path: '/artifacts',
     name: 'artifacts',
     // lazy: keeps the markdown renderer out of the main bundle

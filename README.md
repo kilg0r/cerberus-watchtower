@@ -30,14 +30,44 @@ input** (a permission/approval prompt), **finished** (turn ended, including
 the idle ping that follows), or idle. Transcripts of any size are indexed:
 each file is read once, then only its appended tail.
 
+### Processes
+Every running Claude Code process as a container: what it is executing right
+now. Each card shows the session's state (working, **needs you** - an open
+question or permission prompt - shell, background, idle), its CPU trend and
+memory, and one lane per agent: the main agent, running subagents and forks,
+and workflow runs grouped by phase. Every in-flight tool call is listed with
+its description, command and a ticking timer, with the OS processes it started
+underneath (the shell, then `dotnet test` → vstest → testhost, and so on, each
+with CPU and memory). Background tasks show the last lines they wrote, so a
+long test run reports progress in place. Processes that outlived their call
+are flagged as orphans. Everything is color-coded by kind of work - script,
+build, test, shell, network, service, agent, tool - and the color key doubles
+as a filter. Host RAM is shown and turns amber past 90%. "Pop out" opens the
+view in its own window (`/processes?popout=1`, no sidebar).
+
+Sources: Claude Code's own registry of running sessions
+(`~/.claude/sessions/<pid>.json` - pid, session id, busy/idle status), the OS
+process table under each Claude process (psutil), and the transcript index
+(tool calls without a result yet, background launches until their completion
+notice, subagent metadata). Polled every 3 seconds.
+
 ### Artifacts
 Everything agent sessions publish - claude.ai artifacts (from Claude Code's
 built-in `Artifact` tool or the claude-artifacts MCP) and Claude Docs - in one
 searchable list, filterable by kind and project. Each artifact shows its
 version history (label, time, and the session that made each change, linked
 back to Activity), an "Open in Claude" link, and - where Watchtower captured
-the content - a local copy previewed in a sandboxed frame. The index persists
-in SQLite, so it outlives Claude Code's transcript cleanup.
+the content - a local copy previewed in a sandboxed frame. "Open in Chrome"
+(named after the default browser) launches the page itself in the default
+browser - the local HTML copy when there is one, otherwise the claude.ai page -
+since links from the Edge app window would otherwise land in Edge. Pin
+artifacts to keep them at the top of the list as a workdesk; pins keep their
+order as artifacts get edited. The index and pins persist in SQLite, so they
+outlive Claude Code's transcript cleanup. Artifacts published before that -
+whose transcripts are already gone - can be added with "+ Link artifact"
+(paste the claude.ai link; title and project optional). Linked artifacts have
+no local copy; ask Claude to link them if you want the title, icon, sharing
+and dates filled in from claude.ai.
 
 ### Architecture
 Re-derived from source on every scan, so the map cannot go stale. Every stack
@@ -57,6 +87,15 @@ gets a view relevant to its language:
   inventory: language breakdown, directory map, docs index. No stack 501s.
 - **Portfolio overview** - "All repos" scans the entire registry concurrently
   (~12s for 15 repos) into per-repo stat cards with drift badges.
+- **3D map** (default; the 2D dagre graph is one click away and is the
+  fallback without WebGL) - a three.js scene in the style of the
+  cerberuslabs.tech portfolio sphere. **Layered** stacks dependency ranks as
+  horizontal planes, with entry points on top and each dependency below
+  everything that uses it. **Free** is a 3D force layout. Packets run along
+  every line from a project to what it uses. Select a node and its dependencies
+  light up coral, its dependents blue, while the camera flies to it. Legend
+  chips isolate a group. Drag to orbit, right-drag to pan, scroll to zoom,
+  arrow keys step through nodes.
 - **Interactivity** - double-click any node to focus on its dependency
   neighborhood (depth-selectable, screen-wide). Click any .NET endpoint to open
   the call-flow inspector and drill from controller to the services that do the
@@ -81,7 +120,7 @@ external/LAN flags.
 | Layer | Tech |
 |---|---|
 | Backend | Python 3.12, FastAPI, SQLAlchemy + SQLite, port 8765 |
-| Frontend | Vue 3, Vite, Tailwind CSS v4, Cytoscape.js (dagre layout) |
+| Frontend | Vue 3, Vite, Tailwind CSS v4, three.js (3D architecture map), Cytoscape.js (2D dagre graph) |
 | AI | Claude Code CLI in headless mode (`claude -p`), hash-keyed caching |
 | Agent feed | Claude Code hooks → append-only JSONL → SSE |
 
@@ -154,9 +193,13 @@ artifact index come from transcripts and work without them.
 | `POST /api/review-queue/{id}/summarize` | AI summary of pending diff (cached) |
 | `GET /api/activity` | recent agent sessions (state, repos, artifacts) + events |
 | `GET /api/events/stream` | SSE live event feed |
-| `GET /api/artifacts` | every published artifact / doc, newest first |
+| `GET /api/artifacts` | every published artifact / doc - pinned first, then newest first - plus the default browser's name |
+| `PUT` / `DELETE /api/artifacts/{id}/pin` | pin / unpin an artifact |
+| `POST /api/artifacts/link` | index an artifact by its claude.ai link; JSON `{url, title?, favicon?, sharing?, version?, description?, repo_id? or cwd?}` |
+| `POST /api/artifacts/{id}/open` | open it in the default browser; JSON body `{"target": "page" \| "claude"}` |
 | `GET /api/artifacts/{id}` | one artifact + its version history |
 | `GET /api/artifacts/{id}/content/{path}` | local copy, served under a CSP sandbox |
+| `GET /api/processes` | every live Claude process: state, lanes (main/subagents/workflows) with in-flight calls and their OS process trees, background tasks with output tails, MCP servers, host CPU/RAM |
 | `GET /api/ports` | live socket table with process identity |
 | `GET /api/architecture-overview` | stats-level scan of every repo |
 | `GET /api/architecture/{id}` | full architecture snapshot (any stack) |

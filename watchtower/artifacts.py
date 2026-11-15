@@ -25,12 +25,13 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote, urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import DATA_DIR
-from .models import Artifact, ArtifactOp
+from .models import Artifact, ArtifactOp, ArtifactPin
 
 ARTIFACTS_DIR = DATA_DIR / "artifacts"
 MAX_COPY_BYTES = 32 * 1024 * 1024
@@ -48,6 +49,8 @@ CREATED_FROM_TYPE_RE = re.compile(
     r"Created a new Artifact at (https://claude\.ai/(?:code/)?artifact/([A-Za-z0-9-]+))(?: \(version ([0-9A-Za-z-]+)\))?"
 )
 UUID_RE = re.compile(rf"^{UUID}$")
+# claude.ai version ids lead with the publish time in unix seconds: 1793851773-5c69
+_VERSION_TS_RE = re.compile(r"^(\d{9,11})-[0-9A-Za-z]+$")
 _ARTIFACT_URL_ID_RE = re.compile(r"artifact/([A-Za-z0-9-]+)")
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 # claude.ai short artifact ids are the artifact uuid in base58 (bitcoin alphabet)
@@ -435,19 +438,32 @@ def to_dict(art: Artifact) -> dict:
     }
 
 
+def _pin_fields(pinned_at: datetime | None) -> dict:
+    return {"pinned": pinned_at is not None, "pinned_at": _iso(pinned_at)}
+
+
 def list_artifacts(session: Session, limit: int = 1000) -> list[dict]:
-    rows = session.scalars(select(Artifact).order_by(Artifact.updated_at.desc()).limit(limit)).all()
+    """Pinned first (in pin order - a workdesk shouldn't reshuffle as things
+    get edited), then everything else newest first. Pins sort ahead of the
+    limit so they never fall off the list."""
+    rows = session.execute(
+        select(Artifact, ArtifactPin.pinned_at)
+        .outerjoin(ArtifactPin, ArtifactPin.artifact_id == Artifact.id)
+        .order_by(ArtifactPin.position.is_(None), ArtifactPin.position, Artifact.updated_at.desc())
+        .limit(limit)
+    ).all()
     # sessions per artifact, most recently active first
     session_ids: dict[str, list[str]] = {}
     for artifact_id, session_id, _ in session.execute(
         select(ArtifactOp.artifact_id, ArtifactOp.session_id, func.max(ArtifactOp.ts).label("last"))
+        .where(ArtifactOp.session_id != "")  # hand-linked, no session
         .group_by(ArtifactOp.artifact_id, ArtifactOp.session_id)
         .order_by(func.max(ArtifactOp.ts).desc())
     ).all():
         session_ids.setdefault(artifact_id, []).append(session_id)
     out = []
-    for art in rows:
-        item = to_dict(art)
+    for art, pinned_at in rows:
+        item = to_dict(art) | _pin_fields(pinned_at)
         item["session_ids"] = session_ids.get(art.id, [])
         item["session_count"] = len(item["session_ids"])
         out.append(item)
@@ -461,7 +477,8 @@ def artifact_detail(session: Session, artifact_id: str) -> dict | None:
     ops = session.scalars(
         select(ArtifactOp).where(ArtifactOp.artifact_id == artifact_id).order_by(ArtifactOp.ts.desc())
     ).all()
-    detail = to_dict(art)
+    pin = session.get(ArtifactPin, artifact_id)
+    detail = to_dict(art) | _pin_fields(pin.pinned_at if pin else None)
     detail["ops"] = [
         {
             "ts": _iso(op.ts),
@@ -475,6 +492,138 @@ def artifact_detail(session: Session, artifact_id: str) -> dict | None:
         for op in ops
     ]
     return detail
+
+
+def set_pinned(session: Session, artifact_id: str, pinned: bool) -> dict | None:
+    """Pin or unpin an indexed artifact; None when the id is unknown.
+    Idempotent - re-pinning keeps the original pin time (and position)."""
+    if session.get(Artifact, artifact_id) is None:
+        return None
+    pin = session.get(ArtifactPin, artifact_id)
+    if pinned and pin is None:
+        last = session.scalar(select(func.max(ArtifactPin.position)))
+        pin = ArtifactPin(
+            artifact_id=artifact_id,
+            position=(last or 0) + 1,
+            pinned_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        session.add(pin)
+    elif not pinned and pin is not None:
+        session.delete(pin)
+        pin = None
+    session.commit()
+    return _pin_fields(pin.pinned_at if pin else None)
+
+
+LINK_TOOL = "watchtower:link"
+_LINK_FIELDS = ("title", "description", "favicon", "sharing", "version")
+
+
+def version_time(version: str | None) -> datetime | None:
+    """Publish time encoded in a claude.ai version id (naive UTC), or None."""
+    match = _VERSION_TS_RE.match(version or "")
+    if not match:
+        return None
+    try:
+        return datetime.fromtimestamp(int(match.group(1)), timezone.utc).replace(tzinfo=None)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _link_url(ref: str, artifact_id: str) -> str:
+    """A clean claude.ai URL for a linked artifact: the given link without
+    query/fragment, else one built from the id."""
+    parsed = urlsplit(ref.strip())
+    if parsed.scheme == "https" and parsed.netloc == "claude.ai" and "/artifact/" in parsed.path:
+        return f"https://claude.ai{parsed.path}"
+    token = ref.strip()
+    if not UUID_RE.match(token) and canonical_id(token) == artifact_id:
+        return f"https://claude.ai/artifact/{token}"  # a bare short id
+    return f"https://claude.ai/code/artifact/{artifact_id}"
+
+
+def link(session: Session, ref: str, meta: dict | None = None, cwd: str | None = None) -> dict | None:
+    """Add an artifact by its claude.ai link (or id). For artifacts whose
+    publishing session's transcript is already gone - Claude Code cleans old
+    transcripts, so ingest never saw them. Takes whatever metadata the caller
+    knows (an agent with the claude-artifacts MCP can pass title, favicon,
+    sharing and version); there is no local copy. Re-linking refreshes the
+    metadata. Returns {"id", "created"}, or None for an unrecognised link."""
+    artifact_id = canonical_id(ref)
+    if artifact_id is None:
+        return None
+    meta = {key: value for key, value in (meta or {}).items() if key in _LINK_FIELDS and value}
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    published = version_time(meta.get("version"))
+
+    art = session.get(Artifact, artifact_id)
+    created = art is None
+    if created:
+        art = Artifact(
+            id=artifact_id,
+            kind="artifact",
+            url=_link_url(ref, artifact_id),
+            created_at=published or now,
+            updated_at=published or now,
+            content_status="none",
+            op_count=0,
+            deleted=False,
+            cwd=cwd,
+        )
+        session.add(art)
+    else:
+        art.url = art.url or _link_url(ref, artifact_id)
+        art.cwd = art.cwd or cwd
+        if published and published < art.updated_at:
+            meta = {}  # caller's metadata is older than what the index has
+        elif published:
+            if meta.get("version") != art.version and art.content_status == "ok":
+                art.content_status = "stale"  # the live page moved past the local copy
+            art.updated_at = published
+    for key, value in meta.items():
+        setattr(art, key, value)
+
+    op_id = f"link:{artifact_id}"
+    if session.scalar(select(ArtifactOp.id).where(ArtifactOp.tool_use_id == op_id)) is None:
+        session.add(
+            ArtifactOp(
+                tool_use_id=op_id,
+                artifact_id=artifact_id,
+                session_id="",  # no session - linked by hand
+                tool=LINK_TOOL,
+                action="link",
+                version=meta.get("version"),
+                cwd=cwd,
+                ts=now,
+            )
+        )
+    session.commit()
+    return {"id": artifact_id, "created": created}
+
+
+def browser_url(
+    session: Session, artifact_id: str, target: str, server_url: str,
+    store_dir: Path | None = None, theme: str = "auto",
+) -> str | None:
+    """URL to open for an artifact in an external browser, or None.
+    `page` = the local HTML copy as a standalone page (served by Watchtower,
+    still under the sandbox CSP); `claude` = its claude.ai page. URLs are only
+    ever built from the index, never taken from the client."""
+    art = session.get(Artifact, artifact_id)
+    if art is None:
+        return None
+    if target == "claude":
+        return art.url if art.url and art.url.startswith("https://claude.ai/") else None
+    if target == "page":
+        name = art.content_file
+        if not name or PurePosixPath(name).suffix.lower() not in (".html", ".htm"):
+            return None
+        if content_path(artifact_id, name, store_dir) is None:
+            return None
+        if theme in ("light", "dark"):
+            return f"{server_url}/api/artifacts/{artifact_id}/view/{theme}/{quote(name, safe='/')}"
+        return f"{server_url}/api/artifacts/{artifact_id}/content/{quote(name, safe='/')}"
+    return None
 
 
 def artifacts_by_session(session: Session, session_ids: list[str]) -> dict[str, list[dict]]:
@@ -512,17 +661,58 @@ _HEAD_RE = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _DOCTYPE_RE = re.compile(r"<!doctype[^>]*>", re.IGNORECASE)
 
 
-def with_storage_shim(html: str) -> str:
-    """Insert STORAGE_SHIM ahead of the page's own scripts (after <head> or the
+def _inject_head(html: str, snippet: str) -> str:
+    """Insert `snippet` ahead of the page's own scripts (after <head> or the
     doctype - never before the doctype, which would force quirks mode)."""
     head = _HEAD_RE.search(html, 0, 4096)
     if head:
-        return html[: head.end()] + STORAGE_SHIM + html[head.end() :]
+        return html[: head.end()] + snippet + html[head.end() :]
     doctype = _DOCTYPE_RE.match(html.lstrip())
     if doctype:
         offset = len(html) - len(html.lstrip()) + doctype.end()
-        return html[:offset] + STORAGE_SHIM + html[offset:]
-    return STORAGE_SHIM + html
+        return html[:offset] + snippet + html[offset:]
+    return snippet + html
+
+
+def with_storage_shim(html: str) -> str:
+    return _inject_head(html, STORAGE_SHIM)
+
+
+# ---- forced light / dark preview ----------------------------------------
+# Artifacts follow the viewer's theme two ways: claude.ai's toggle sets
+# data-theme="light|dark" on the root (the pattern almost every artifact
+# uses), and plain `prefers-color-scheme` media queries. Chromium doesn't let
+# an embedding page change that media query inside an iframe, so a forced
+# theme rewrites the served text instead: every `prefers-color-scheme: X` -
+# in CSS and in matchMedia() strings alike - becomes an always-true query
+# when X is the forced theme and a never-true one otherwise.
+THEMES = ("auto", "light", "dark")
+_SCHEME_RE = re.compile(r"prefers-color-scheme\s*:\s*(dark|light)", re.IGNORECASE)
+_ALWAYS = "min-width: 0px"
+_NEVER = "max-width: 0px"
+THEMED_SUFFIXES = {".html", ".htm", ".css", ".js", ".mjs"}
+
+
+def force_scheme(text: str, theme: str) -> str:
+    if theme not in ("light", "dark"):
+        return text
+    return _SCHEME_RE.sub(lambda m: _ALWAYS if m.group(1).lower() == theme else _NEVER, text)
+
+
+def theme_shim(theme: str) -> str:
+    """Root attribute + color-scheme for a forced theme (form controls and
+    scrollbars follow color-scheme, not the stylesheet)."""
+    if theme not in ("light", "dark"):
+        return ""
+    return (
+        f"<script>document.documentElement.setAttribute('data-theme','{theme}');</script>"
+        f"<style>:root{{color-scheme:{theme} !important}}</style>"
+    )
+
+
+def prepare_html(html: str, theme: str = "auto") -> str:
+    """A local HTML copy as served: storage shim always, theme forced on request."""
+    return _inject_head(force_scheme(html, theme), STORAGE_SHIM + theme_shim(theme))
 
 
 def content_path(artifact_id: str, rel_path: str, store_dir: Path | None = None) -> Path | None:

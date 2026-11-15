@@ -5,12 +5,14 @@ import re
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 
-from . import artifacts, config, drift, events, notifier, sessions, system_ports
+from . import artifacts, browser, config, drift, events, live_processes, notifier, sessions, system_ports
 from .ai import narrator, summarizer
 from .db import get_session_factory
 from .scanners import git_scanner, scan_architecture, transcript_parser
@@ -273,6 +275,52 @@ async def session_commits(session_id: str) -> dict:
     return {"repo_id": repo.id, "project": repo.name, "commits": commits}
 
 
+# ============================== processes ==============================
+# Every running Claude process as a container: its in-flight tool calls,
+# subagents, background tasks and the OS processes they started.
+
+_STATUS_STATES = {"busy": "working", "idle": "idle", "shell": "shell"}
+
+
+def process_state(view: dict, event: dict | None, now: datetime) -> str:
+    """working | waiting | shell | background | idle - from Claude's own
+    status, an open AskUserQuestion, or a permission prompt (hook event)."""
+    status = (view.get("status") or "").lower()
+    ops = [op for lane in view["lanes"] for op in lane["ops"]]
+    if any(op["category"] == "waiting" for op in ops):
+        return "waiting"
+    hook = session_state(sessions.parse_iso(view.get("last_activity")), event, now)
+    if hook == "waiting" and status != "idle":
+        return "waiting"
+    state = _STATUS_STATES.get(status)
+    if state is None:  # a status this version doesn't know
+        state = "waiting" if any(w in status for w in ("wait", "permission", "input", "action")) else "working"
+    if state == "idle" and (view["background"] or len(view["lanes"]) > 1 or ops):
+        return "background"  # the turn ended but tasks/agents still run
+    return state
+
+
+def _processes_payload() -> dict:
+    snap = live_processes.snapshot(sessions.index)
+    latest_events = events.latest_by_session()
+    table = _repo_table()
+    now = datetime.now(timezone.utc)
+    for view in snap["sessions"]:
+        summary = sessions.index.summary_for(view["session_id"]) or {
+            "cwd": view.get("cwd"), "start_cwd": view.get("cwd"), "files_edited": [],
+        }
+        label = _session_projects(summary, None, table)
+        view["project"], view["repo_id"] = label["project"], label["repo_id"]
+        view["state"] = process_state(view, latest_events.get(view["session_id"]), now)
+    snap["indexing"] = not sessions.index.ready
+    return snap
+
+
+@app.get("/api/processes")
+async def processes() -> dict:
+    return await asyncio.to_thread(_processes_payload)
+
+
 # ============================== artifacts ==============================
 # Everything sessions published (Claude Code file artifacts, claude.ai pages,
 # Claude Docs), indexed from transcripts by the background session loop.
@@ -301,7 +349,7 @@ def _artifact_list_payload() -> dict:
     table, cache = _repo_table(), {}
     for item in items:
         item.update(_artifact_project(item["session_ids"], item.get("cwd"), table, cache))
-    return {"artifacts": items, "indexing": not sessions.index.ready}
+    return {"artifacts": items, "indexing": not sessions.index.ready, "browser": browser.default_browser()}
 
 
 @app.get("/api/artifacts")
@@ -319,7 +367,8 @@ async def artifact_detail(artifact_id: str) -> dict:
     if detail is None:
         raise HTTPException(404, f"unknown artifact: {artifact_id}")
     table, cache = _repo_table(), {}
-    session_ids = list(dict.fromkeys(op["session_id"] for op in detail["ops"]))  # newest first
+    # newest first; hand-linked ops have no session
+    session_ids = list(dict.fromkeys(op["session_id"] for op in detail["ops"] if op["session_id"]))
     detail.update(_artifact_project(session_ids, detail.get("cwd"), table, cache))
     titles = sessions.index.titles(set(session_ids))
     for op in detail["ops"]:
@@ -328,8 +377,94 @@ async def artifact_detail(artifact_id: str) -> dict:
     return detail
 
 
-@app.get("/api/artifacts/{artifact_id}/content/{rel_path:path}")
-async def artifact_content(artifact_id: str, rel_path: str) -> Response:
+class LinkRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=500)
+    title: str | None = Field(None, max_length=300)
+    description: str | None = Field(None, max_length=2000)
+    favicon: str | None = Field(None, max_length=32)
+    sharing: Literal["owner", "users", "org", "public"] | None = None
+    version: str | None = Field(None, max_length=64)
+    repo_id: str | None = None  # project to file it under (registry id)...
+    cwd: str | None = Field(None, max_length=500)  # ...or any project folder
+
+
+@app.post("/api/artifacts/link")
+async def link_artifact(body: LinkRequest) -> dict:
+    """Index an artifact by its claude.ai link - for ones published by
+    sessions whose transcripts were cleaned up before Watchtower saw them."""
+    cwd = body.cwd
+    if body.repo_id:
+        repo = config.repo_by_id(body.repo_id)
+        if repo is None:
+            raise HTTPException(404, f"unknown repo: {body.repo_id}")
+        cwd = str(repo.path)
+    meta = body.model_dump(include={"title", "description", "favicon", "sharing", "version"})
+
+    def _link() -> dict | None:
+        with get_session_factory()() as db:
+            return artifacts.link(db, body.url, meta, cwd)
+
+    result = await asyncio.to_thread(_link)
+    if result is None:
+        raise HTTPException(422, "not a claude.ai artifact link or id")
+    return result
+
+
+@app.put("/api/artifacts/{artifact_id}/pin")
+async def pin_artifact(artifact_id: str) -> dict:
+    return await _set_pinned(artifact_id, True)
+
+
+@app.delete("/api/artifacts/{artifact_id}/pin")
+async def unpin_artifact(artifact_id: str) -> dict:
+    return await _set_pinned(artifact_id, False)
+
+
+async def _set_pinned(artifact_id: str, pinned: bool) -> dict:
+    def _apply() -> dict | None:
+        with get_session_factory()() as db:
+            return artifacts.set_pinned(db, artifact_id, pinned)
+
+    result = await asyncio.to_thread(_apply)
+    if result is None:
+        raise HTTPException(404, f"unknown artifact: {artifact_id}")
+    return {"id": artifact_id, **result}
+
+
+class OpenRequest(BaseModel):
+    target: Literal["page", "claude"]
+    # the preview's light/dark choice, applied to the local page copy
+    theme: Literal["auto", "light", "dark"] = "auto"
+
+
+@app.post("/api/artifacts/{artifact_id}/open")
+async def open_artifact(artifact_id: str, body: OpenRequest) -> dict:
+    """Open an artifact in the default browser on this machine. Requires a
+    JSON body on purpose: FastAPI rejects non-JSON content types, and a
+    cross-origin JSON POST needs a CORS preflight only the Vite dev origin
+    passes - so other web pages (or a sandboxed artifact, origin "null")
+    can't make this server launch anything."""
+
+    def _url() -> str | None:
+        with get_session_factory()() as db:
+            return artifacts.browser_url(db, artifact_id, body.target, config.SERVER_URL, theme=body.theme)
+
+    url = await asyncio.to_thread(_url)
+    if url is None:
+        what = "local HTML copy" if body.target == "page" else "claude.ai link"
+        raise HTTPException(404, f"no {what} for that artifact")
+    try:
+        await asyncio.to_thread(browser.open_url, url)
+    except OSError as err:
+        raise HTTPException(502, f"could not launch the browser: {err}") from err
+    return {"opened": url, "browser": browser.default_browser()}
+
+
+_THEMED_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                  ".mjs": "text/javascript; charset=utf-8"}
+
+
+async def _serve_artifact_file(artifact_id: str, rel_path: str, theme: str) -> Response:
     path = artifacts.content_path(artifact_id, rel_path)
     if path is None:
         raise HTTPException(404, "no local copy of that file")
@@ -337,9 +472,27 @@ async def artifact_content(artifact_id: str, rel_path: str) -> Response:
     suffix = path.suffix.lower()
     if suffix in (".html", ".htm"):
         html = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
-        return HTMLResponse(artifacts.with_storage_shim(html), headers=headers)
+        return HTMLResponse(artifacts.prepare_html(html, theme), headers=headers)
+    if theme != "auto" and suffix in _THEMED_TYPES:
+        # a multi-file page's stylesheets and scripts follow the forced theme too
+        text = await asyncio.to_thread(path.read_text, encoding="utf-8", errors="replace")
+        return Response(artifacts.force_scheme(text, theme), media_type=_THEMED_TYPES[suffix], headers=headers)
     media_type = "text/plain; charset=utf-8" if suffix in (".md", ".markdown", ".txt") else None
     return FileResponse(path, media_type=media_type, headers=headers)
+
+
+@app.get("/api/artifacts/{artifact_id}/content/{rel_path:path}")
+async def artifact_content(artifact_id: str, rel_path: str) -> Response:
+    return await _serve_artifact_file(artifact_id, rel_path, "auto")
+
+
+@app.get("/api/artifacts/{artifact_id}/view/{theme}/{rel_path:path}")
+async def artifact_content_themed(artifact_id: str, theme: str, rel_path: str) -> Response:
+    """A local copy with light or dark forced. The theme is a path segment, not
+    a query string, so a page's relative stylesheet/script URLs inherit it."""
+    if theme not in artifacts.THEMES:
+        raise HTTPException(404, f"unknown theme: {theme}")
+    return await _serve_artifact_file(artifact_id, rel_path, theme)
 
 
 @app.get("/api/ports")
