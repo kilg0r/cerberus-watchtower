@@ -303,12 +303,15 @@ def _load_hook():
     return module
 
 
-def test_hook_captures_artifact_fields():
+def test_hook_captures_artifact_fields(tmp_path):
     hook = _load_hook()
+    # The hook runs on the machine that published, so paths are always native
+    # (a hardcoded C:\ path has no separators on macOS/Linux).
+    plan = str(tmp_path / "plan.md")
     fields = hook._artifact_fields(
         "Artifact",
-        {"file_path": r"C:\tmp\plan.md", "label": "v3"},
-        {"tool_response": f"Published C:\\tmp\\plan.md at https://claude.ai/code/artifact/{FILE_ID}"},
+        {"file_path": plan, "label": "v3"},
+        {"tool_response": f"Published {plan} at https://claude.ai/code/artifact/{FILE_ID}"},
     )
     assert fields["artifact_url"].endswith(FILE_ID)
     assert fields["artifact_title"] == "plan.md"
