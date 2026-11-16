@@ -1,6 +1,10 @@
-"""Windows toast notifications for agent session lifecycle.
+"""Desktop notifications for agent session lifecycle.
 
-Tails the hook event log and raises a toast when:
+Windows uses winotify toasts; macOS shells out to terminal-notifier when it is
+installed (clicking the banner opens the dashboard) and falls back to
+osascript otherwise. Anywhere else the notifier is a no-op.
+
+Tails the hook event log and raises a notification when:
   - a session is waiting on the user (Notification events - permission /
     proceed prompts, idle warnings), or
   - a session finishes a long-running turn (Stop after >= MIN_TURN_SECONDS
@@ -14,6 +18,9 @@ with WATCHTOWER_NOTIFY=0.
 import asyncio
 import json
 import os
+import shutil
+import subprocess
+import sys
 from datetime import datetime, timedelta
 
 from . import events
@@ -109,9 +116,40 @@ def _show_toast(payload: dict) -> None:
     toast.show()
 
 
+def _applescript_literal(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _show_mac_notification(payload: dict) -> None:
+    """terminal-notifier if available (its banner opens the dashboard on click),
+    otherwise osascript, which every Mac has."""
+    notifier = shutil.which("terminal-notifier")
+    if notifier:
+        command = [notifier, "-title", payload["title"], "-message", payload["message"],
+                   "-open", DASHBOARD_URL, "-group", "cerberus-watchtower"]
+    else:
+        script = (f"display notification {_applescript_literal(payload['message'])} "
+                  f"with title {_applescript_literal(payload['title'])}")
+        command = ["osascript", "-e", script]
+    try:
+        subprocess.run(command, capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # a missed notification is never worth an error
+
+
+def _notify_backend():
+    """The OS notification mechanism for this platform, or None if there isn't one."""
+    if _Toast is not None:
+        return _show_toast
+    if sys.platform == "darwin" and shutil.which("osascript"):
+        return _show_mac_notification
+    return None
+
+
 async def run() -> None:
-    """Background task: tail the event log, toast on qualifying events."""
-    if os.environ.get("WATCHTOWER_NOTIFY", "1") == "0" or _Toast is None:
+    """Background task: tail the event log, notify on qualifying events."""
+    backend = _notify_backend()
+    if os.environ.get("WATCHTOWER_NOTIFY", "1") == "0" or backend is None:
         return
     decider = NotificationDecider()
     position = events.current_position()  # only react to events after startup
@@ -125,7 +163,7 @@ async def run() -> None:
                 except json.JSONDecodeError:
                     continue
                 if payload:
-                    await asyncio.to_thread(_show_toast, payload)
+                    await asyncio.to_thread(backend, payload)
         except asyncio.CancelledError:
             raise
         except Exception:

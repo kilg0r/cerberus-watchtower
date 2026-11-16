@@ -12,7 +12,6 @@ at its head, then `drift.diff_arch` the two.
 """
 
 import dataclasses
-import io
 import json
 import shutil
 import subprocess
@@ -29,7 +28,12 @@ from ..models import CommitArchCache
 from . import scan_architecture
 
 _TMP_ROOT = DATA_DIR / "_arch_tmp"
-MAX_ARCHIVE_BYTES = 256 * 1024 * 1024  # skip pathologically large trees
+# Guards against a pathological tree, not against a big one. Repos that commit
+# build output are ordinary here - payTableDotnet's tree is ~380 MB, most of it
+# a publish/ directory, an .apk and a zip. The archive streams to disk rather
+# than through memory, so the real cost of a large tree is the scan (~9s for
+# payTableDotnet), paid once per commit and then cached forever.
+MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
 ARCHIVE_TIMEOUT_SECONDS = 120
 
 
@@ -63,20 +67,22 @@ def _store(repo_id: str, sha: str, payload: dict) -> None:
         session.commit()
 
 
-def _archive_bytes(repo_path: Path, sha: str) -> bytes | None:
-    """Read-only tar of the tree at `sha`. Binary, so it bypasses the text-mode
-    `_git` helper but stays an explicit-args, non-shell, non-mutating git call."""
+def _archive_to_file(repo_path: Path, sha: str, dest: Path) -> bool:
+    """Stream a read-only tar of the tree at `sha` into `dest`. Writing straight
+    to the file keeps peak memory flat regardless of tree size - buffering it
+    instead would cost a repo-sized spike per call, twice per delta. Stays an
+    explicit-args, non-shell, non-mutating git call."""
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "archive", "--format=tar", sha],
-            capture_output=True,
-            timeout=ARCHIVE_TIMEOUT_SECONDS,
-        )
+        with dest.open("wb") as fh:
+            result = subprocess.run(
+                ["git", "-C", str(repo_path), "archive", "--format=tar", sha],
+                stdout=fh,
+                stderr=subprocess.DEVNULL,
+                timeout=ARCHIVE_TIMEOUT_SECONDS,
+            )
     except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0 or not result.stdout:
-        return None
-    return result.stdout
+        return False
+    return result.returncode == 0 and dest.stat().st_size > 0
 
 
 def arch_at_commit(repo: RepoConfig, sha: str) -> dict | None:
@@ -87,15 +93,22 @@ def arch_at_commit(repo: RepoConfig, sha: str) -> dict | None:
         if cached is not None:
             return cached
 
-        data = _archive_bytes(repo.path, sha)
-        if not data or len(data) > MAX_ARCHIVE_BYTES:
-            return None
-
         _TMP_ROOT.mkdir(parents=True, exist_ok=True)
         tmp_dir = Path(tempfile.mkdtemp(dir=_TMP_ROOT))
+        # Sibling, not a child: extracting one directory deeper would spend 5
+        # more characters of Windows' 260-char MAX_PATH on trees that are
+        # already deep (payTable.WebApp/wwwroot/...).
+        archive = tmp_dir.with_suffix(".tar")
         try:
-            with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+            if not _archive_to_file(repo.path, sha, archive):
+                return None
+            if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+                return None  # bail before paying for extraction + scan
+
+            with tarfile.open(archive) as tar:
                 tar.extractall(tmp_dir, filter="data")  # 3.12 safe-extract filter
+            archive.unlink()  # reclaim the tar before the scan runs
+
             scoped = dataclasses.replace(repo, path=tmp_dir)
             result = scan_architecture(scoped)
             if result is None:
@@ -103,6 +116,7 @@ def arch_at_commit(repo: RepoConfig, sha: str) -> dict | None:
             _store(repo.id, sha, result)
             return result
         finally:
+            archive.unlink(missing_ok=True)
             shutil.rmtree(tmp_dir, ignore_errors=True)
     except Exception:
         return None

@@ -1,6 +1,32 @@
+import tomllib
 from pathlib import Path
 
-from watchtower.config import infer_stack, load_registry
+from watchtower.config import PROJECT_ROOT, infer_stack, load_registry
+
+# The folder layout on the Windows desktop, and the repo id each folder must
+# keep resolving to. Caches, drift snapshots and narratives are keyed by id, so
+# a repos.toml edit that renames one of these silently orphans its history.
+WINDOWS_LAYOUT = {
+    "_paytable": {
+        "payTableDotnet": "paytable-dotnet",
+        "payTableVue": "paytable-vue",
+        "payTableShell": "paytable-shell",
+        "paytablemx": "paytablemx",
+        "paytable-infrastructure": "paytable-infrastructure",
+        "paytable-claude-config": "paytable-claude-config",
+    },
+    "_cerberus": {
+        "Cerberus": "cerberus",
+        "cerberuslabsllc": "cerberuslabsllc",
+        "cerberus-content-manager": "cerberus-content-manager",
+        "cerberus-markets": "cerberus-markets",
+        "cerberus-home-hub": "cerberus-home-hub",
+        "cerberus-watchtower": "cerberus-watchtower",
+        "cerberus-claude-config": "cerberus-claude-config",
+        "cerberus-books": "cerberus-books",
+        "rierawedding": "rierawedding",
+    },
+}
 
 
 def test_load_registry_parses_explicit_repos(tmp_path: Path):
@@ -74,6 +100,39 @@ def test_load_registry_default_file():
     repos = load_registry()
     ids = {r.id for r in repos}
     # known stable ids must survive auto-discovery (caches/snapshots key on them)
-    assert {"paytable-dotnet", "paytable-vue", "cerberus-markets", "cerberus-books"} <= ids
+    assert {"paytable-dotnet", "paytable-vue", "cerberus-watchtower"} <= ids
     assert len(ids) == len(repos)  # ids unique
     assert {r.group for r in repos} >= {"paytable", "cerberus"}
+    # every registered path must exist on this machine - the assertion that
+    # catches a repos.toml carried over from another box.
+    assert [r.id for r in repos if not r.path.is_dir()] == []
+
+
+def test_committed_overrides_preserve_windows_repo_ids(tmp_path: Path):
+    """repos.toml carries the roots for every machine, so an edit made on one
+    box must not renumber the other's repos. Replays the Windows folder layout
+    against the committed overrides and pins the ids it must produce."""
+    real = tomllib.loads((PROJECT_ROOT / "repos.toml").read_text(encoding="utf-8"))
+    overrides = real["overrides"]
+
+    roots = []
+    for root_name, folders in WINDOWS_LAYOUT.items():
+        root = tmp_path / root_name
+        for folder in folders:
+            (root / folder / ".git").mkdir(parents=True)
+        roots.append(f"[[roots]]\npath = '{root}'\ngroup = \"{root_name.lstrip('_')}\"\n")
+
+    toml = tmp_path / "repos.toml"
+    override_block = "\n".join(
+        f"[overrides.{folder}]\n"
+        + "\n".join(
+            f"{k} = {v!r}" if not isinstance(v, bool) else f"{k} = {str(v).lower()}"
+            for k, v in body.items()
+        )
+        for folder, body in overrides.items()
+    )
+    toml.write_text("\n".join(roots) + "\n" + override_block, encoding="utf-8")
+
+    resolved = {r.path.name: r.id for r in load_registry(toml)}
+    expected = {f: i for folders in WINDOWS_LAYOUT.values() for f, i in folders.items()}
+    assert resolved == expected

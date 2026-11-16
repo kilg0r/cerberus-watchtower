@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import DATA_DIR
 from ..models import SessionSummaryCache, SummaryCache
 from ..scanners.git_scanner import MAX_UNTRACKED_BYTES, _git, _parse_status
 
@@ -36,6 +37,14 @@ ISOLATION_FLAGS = (
     "--tools", "",
     "--no-session-persistence",
 )
+
+# `claude -p` inherits the server's working directory, and a headless session
+# started inside a git repo reads that repo's CLAUDE.md and working tree - it
+# then summarizes what it finds around it instead of what arrived on stdin.
+# Since the server runs from the Watchtower checkout, every summary came back
+# describing Watchtower. An empty scratch directory leaves stdin as the only
+# thing to summarize.
+NEUTRAL_CWD = DATA_DIR / "_ai_cwd"
 
 PROMPT = (
     "You are summarizing pending (uncommitted) changes in a git repository so the "
@@ -100,6 +109,7 @@ def run_claude(diff: str, prompt: str = PROMPT) -> str:
     claude = shutil.which("claude")
     if claude is None:
         raise SummarizerError("claude CLI not found on PATH")
+    NEUTRAL_CWD.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(
             [claude, "-p", prompt, *ISOLATION_FLAGS],
@@ -109,6 +119,7 @@ def run_claude(diff: str, prompt: str = PROMPT) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=CLAUDE_TIMEOUT_SECONDS,
+            cwd=NEUTRAL_CWD,
         )
     except subprocess.TimeoutExpired as exc:
         raise SummarizerError("claude timed out after 120s") from exc

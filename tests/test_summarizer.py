@@ -19,6 +19,30 @@ def test_collect_diff_includes_tracked_and_untracked(temp_git_repo: Path):
     assert "VALUE = 1" in diff
 
 
+def test_run_claude_uses_a_neutral_cwd(monkeypatch, tmp_path):
+    """Run from an empty scratch dir, never a repo: a headless session started
+    inside a checkout summarizes that checkout instead of stdin."""
+    captured = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "a summary"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured.update(cmd=cmd, **kwargs)
+        return _Result()
+
+    monkeypatch.setattr(summarizer.shutil, "which", lambda _: "/usr/bin/claude")
+    monkeypatch.setattr(summarizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(summarizer, "NEUTRAL_CWD", tmp_path / "scratch")
+
+    assert summarizer.run_claude("the diff") == "a summary"
+    assert captured["cwd"] == tmp_path / "scratch"
+    assert captured["cwd"].is_dir()  # created on demand
+    assert captured["input"] == "the diff"
+
+
 def test_cache_miss_runs_claude_then_hit_skips_it(session, monkeypatch):
     calls = []
 
@@ -94,7 +118,7 @@ def test_claude_failure_is_not_cached(session, monkeypatch):
     assert result["summary"] == "recovered summary"
 
 
-def test_run_claude_isolates_the_headless_run(monkeypatch):
+def test_run_claude_isolates_the_headless_run(monkeypatch, tmp_path):
     """Global Stop hooks (the PayTable wrap-up check) block a headless run's
     stop and the reply to the hook came back as the "summary" - every call
     must disable hooks, MCP servers and tools."""
@@ -108,6 +132,7 @@ def test_run_claude_isolates_the_headless_run(monkeypatch):
 
     monkeypatch.setattr(summarizer.shutil, "which", lambda name: "claude")
     monkeypatch.setattr(summarizer.subprocess, "run", fake_run)
+    monkeypatch.setattr(summarizer, "NEUTRAL_CWD", tmp_path / "scratch")
     assert summarizer.run_claude("payTable.Payments structure", prompt="explain") == "a narrative"
     args = calls[0]
     assert args[:3] == ["claude", "-p", "explain"]

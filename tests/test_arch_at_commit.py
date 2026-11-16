@@ -101,3 +101,32 @@ def test_diff_arch_root_baseline_is_all_added(py_repo):
 
 def test_arch_at_commit_unknown_sha_returns_none(py_repo):
     assert arch_at_commit(py_repo["config"], "deadbeef") is None
+
+
+def test_archive_streams_to_disk(py_repo, tmp_path):
+    """The tar goes straight to a file - buffering it would cost a repo-sized
+    memory spike, and repos that commit build output are ~400 MB here."""
+    dest = tmp_path / "tree.tar"
+    assert aac._archive_to_file(py_repo["repo"], py_repo["c2"], dest) is True
+    assert dest.stat().st_size > 0
+
+    import tarfile
+
+    with tarfile.open(dest) as tar:
+        assert "pkg/util.py" in tar.getnames()
+
+
+def test_archive_reports_failure_for_unknown_sha(py_repo, tmp_path):
+    dest = tmp_path / "tree.tar"
+    assert aac._archive_to_file(py_repo["repo"], "deadbeef", dest) is False
+
+
+def test_oversized_tree_is_skipped_before_extraction(py_repo, monkeypatch):
+    """The cap exists to skip a pathological tree, and must bail before paying
+    for extraction + scan - the expensive half."""
+    extracted = []
+    monkeypatch.setattr(aac, "MAX_ARCHIVE_BYTES", 1)  # any real tar exceeds this
+    monkeypatch.setattr(aac.tarfile, "open", lambda *a, **kw: extracted.append(a) or None)
+
+    assert arch_at_commit(py_repo["config"], py_repo["c2"]) is None
+    assert extracted == []  # never reached the tarfile

@@ -8,6 +8,13 @@
 # [overrides.<folder-name>] customizes a discovered repo: id (keep stable -
 # snapshots and caches are keyed by it), name, stack, group, and include=true
 # to register a non-git project directory.
+#
+# Roots for every machine live here together: a root that doesn't exist on the
+# box you're running is skipped silently, so the same file works on the Windows
+# desktop and the Mac. Overrides are keyed by folder name, not path, so they
+# apply on both. Adding a machine = adding its roots below.
+
+# --- Windows desktop ---
 
 [[roots]]
 path = 'C:\Users\aigor\_dev\_paytable'
@@ -15,6 +22,22 @@ group = "paytable"
 
 [[roots]]
 path = 'C:\Users\aigor\_dev\_cerberus'
+group = "cerberus"
+
+# --- Mac ---
+
+[[roots]]
+path = '/Users/aigorriera/_cerberus/_dev/payTable'
+group = "paytable"
+
+[[roots]]
+path = '/Users/aigorriera/_cerberus/_dev'
+group = "cerberus"
+
+# Only child here that isn't underscore-prefixed is cerberus-claude-config,
+# which sits a level above the _dev root on this machine.
+[[roots]]
+path = '/Users/aigorriera/_cerberus'
 group = "cerberus"
 
 # --- PayTable overrides (preserve original ids + display names) ---
@@ -32,10 +55,14 @@ id = "paytable-shell"
 name = "PayTable Shell"
 stack = "android"
 
-[overrides.paytablemx]
-id = "paytablemx"
-name = "paytable.mx"
-stack = "web"
+[overrides.payTableShelliOS]
+id = "paytable-shell-ios"
+name = "PayTable Shell iOS"
+stack = "mixed"
+
+[overrides.PayTable-NFC-Prototype]
+id = "paytable-nfc-prototype"
+name = "PayTable NFC Prototype"
 
 [overrides.paytable-infrastructure]
 id = "paytable-infrastructure"
@@ -46,6 +73,18 @@ stack = "terraform"
 id = "paytable-claude-config"
 name = "PayTable Claude Config"
 stack = "config"
+
+# Lives under the _dev root on this machine but belongs to the PayTable group.
+[overrides.paytablemx]
+id = "paytablemx"
+name = "paytable.mx"
+stack = "web"
+group = "paytable"
+
+[overrides.paytable_web]
+id = "paytable-web"
+name = "PayTable Web"
+group = "paytable"
 
 # --- Cerberus overrides ---
 
@@ -86,6 +125,18 @@ id = "cerberus-books"
 name = "Cerberus Books"
 include = true          # not a git repo, registered anyway
 stack = "python"
+
+[overrides.boostEm]
+id = "boostem"
+name = "BoostEm"
+
+[overrides.CyberDash-Hardware]
+id = "cyberdash-hardware"
+name = "CyberDash Hardware"
+
+[overrides.passmanager]
+id = "passmanager"
+name = "Pass Manager"
 
 [overrides.rierawedding]
 id = "rierawedding"

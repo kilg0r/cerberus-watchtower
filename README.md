@@ -131,6 +131,8 @@ endpoints to handlers with one miss, in about six seconds.
 
 ## Quick start
 
+Windows:
+
 ```powershell
 # backend
 py -3.12 -m venv .venv
@@ -148,6 +150,35 @@ cd ..
 # or use the launcher (idempotent: starts if needed, opens the dashboard)
 scripts\Start-Watchtower.ps1          # also: -Stop | -NoBrowser
 ```
+
+macOS / Linux:
+
+```bash
+# backend (3.12+)
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+# frontend
+(cd frontend && npm install && npm run build)
+
+# run - serves the built frontend at http://127.0.0.1:8765
+.venv/bin/python -m watchtower
+
+# or use the launcher (idempotent: starts if needed, opens the dashboard)
+scripts/watchtower.sh                 # also: --stop | --status | --no-browser
+
+# optional: start at login + a `watchtower` shell function
+scripts/install-macos.sh              # also: --no-agent | --uninstall
+```
+
+**Ports on macOS**: the system-wide socket table is root-only there, so
+`system_ports` falls back to `lsof`, which reports the current user's
+processes. Listeners owned by other users won't appear.
+
+`repos.toml` carries the roots for **every** machine at once - a root that
+doesn't exist on the box you're running is skipped, and overrides key on folder
+name rather than path, so the same committed file drives the Windows desktop
+and the Mac.
 
 Repos are **auto-discovered**: point `repos.toml` at your project roots and
 every child git repository registers itself, with its stack inferred from
@@ -209,8 +240,13 @@ artifact index come from transcripts and work without them.
 ## Development
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/    # 93 tests; scanners run against synthetic fixtures
+.venv\Scripts\python.exe -m pytest tests/    # scanners run against synthetic fixtures
 cd frontend; npm run dev                     # hot reload on :5173, /api proxied to :8765
+```
+
+```bash
+.venv/bin/python -m pytest tests/            # same suite on macOS / Linux
+(cd frontend && npm run dev)
 ```
 
 Data lives in `~/.cerberus-watchtower/` (summary/narrative caches, architecture

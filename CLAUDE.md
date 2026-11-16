@@ -6,19 +6,38 @@ with call-flow drill-down, drift detection, and AI narratives.
 
 ## Commands
 
+Windows:
+
 ```powershell
 .venv\Scripts\python.exe -m watchtower          # run server -> http://127.0.0.1:8765
 scripts\Start-Watchtower.ps1                    # idempotent launcher (-Stop | -NoBrowser); `watchtower` profile fn
-.venv\Scripts\python.exe -m pytest tests/       # run tests (129 passing)
+.venv\Scripts\python.exe -m pytest tests/       # run tests (137 passing)
 cd frontend; npm run dev                        # frontend dev mode (proxies /api to :8765)
 cd frontend; npm run build                      # production build -> frontend/dist
 ```
+
+macOS:
+
+```bash
+.venv/bin/python -m watchtower                  # run server -> http://127.0.0.1:8765
+scripts/watchtower.sh                           # idempotent launcher (--stop | --status | --no-browser); `watchtower` zsh fn
+scripts/install-macos.sh                        # LaunchAgent (start at login) + shell fn (--uninstall)
+.venv/bin/python -m pytest tests/               # run tests (137 passing)
+(cd frontend && npm run build)                  # production build -> frontend/dist
+```
+
+The Mac runs the server under a LaunchAgent (`tech.cerberuslabs.watchtower`),
+so **restarting after a backend change means `launchctl kickstart -k
+gui/$UID/tech.cerberuslabs.watchtower`**, or `watchtower --stop` followed by
+`watchtower`. Logs land in `~/Library/Logs/CerberusWatchtower/`.
 
 ## Architecture
 
 - **Backend**: Python 3.12 + FastAPI + SQLAlchemy/SQLite, port 8765
   - `watchtower/api.py` - all routes; serves `frontend/dist` as SPA when built
-  - `watchtower/config.py` - repo registry loaded from `repos.toml` (15 repos)
+  - `watchtower/config.py` - repo registry loaded from `repos.toml`; roots for
+    every machine live there and non-existent ones are skipped (19 repos on the
+    Mac, 15 on the Windows desktop)
   - `watchtower/scanners/` - `git_scanner` (review queue), `dotnet_scanner`
     (.sln/.csproj graph + MediatR flows + method-level call graph in
     `class_methods`), `vue_scanner` (component/store graph,
@@ -34,7 +53,8 @@ cd frontend; npm run build                      # production build -> frontend/d
     normalize ops, idempotent ingest, local copies, sandboxed serving
   - `watchtower/browser.py` - default-browser name (registry) + `open_url`
     (ShellExecute) for the Artifacts "Open in Chrome" action
-  - `watchtower/system_ports.py` - live OS socket table via psutil (Ports tab)
+  - `watchtower/system_ports.py` - live OS socket table via psutil, falling back
+    to parsing `lsof` on macOS, where the system-wide table is root-only (Ports tab)
   - `watchtower/live_processes.py` - Processes tab: joins Claude Code's
     running-session registry (`~/.claude/sessions/<pid>.json`), the OS
     process trees under each claude pid, and the transcript index's in-flight
@@ -74,6 +94,11 @@ cd frontend; npm run build                      # production build -> frontend/d
   (the PayTable wrap-up check) otherwise block the stop and the reply to the
   hook gets cached as the summary/narrative. `--bare` is not an option: it
   ignores the OAuth login.
+- **`run_claude` must run in a neutral cwd** - a headless `claude -p` started
+  inside a git checkout reads that repo's CLAUDE.md and working tree and
+  summarizes *it* instead of the payload on stdin. The server runs from the
+  Watchtower checkout, so every summary came back describing Watchtower until
+  the subprocess got `cwd=NEUTRAL_CWD` (an empty scratch dir).
 - **Snapshots are a change log, not a scan log** - `drift.record_snapshot` only
   inserts when the structural signature changes.
 - **`hooks/emit_event.py` must stay stdlib-only and never fail** - it runs on
@@ -207,5 +232,13 @@ directories / docs inventory) - nothing 501s.
   .cs content in `tests/test_dotnet_scanner.py`) - never depend on real repos.
 - AI calls are always monkeypatched in tests (`run_claude`).
 - After scanner changes, sanity-check against the real thing: payTableDotnet
-  should report ~44 projects / ~263 handlers / ~431 endpoints / ~3.8k methods
-  in ~8s, with a JSON payload around 1.5 MB.
+  should report ~52 projects / ~380 handlers / ~554 endpoints / ~5k methods in
+  ~10s, with a JSON payload around 1.8 MB. (The solution grows - the point of
+  the check is that the numbers stay in the same neighbourhood, not that they
+  match exactly.)
+- The Git History architectural delta scans two whole trees (`git archive` ->
+  temp dir -> `scan_architecture`), so budget ~11s per uncached commit on
+  payTableDotnet - then it's cached forever per (repo, sha) and re-requests are
+  instant. The archive streams to disk, so peak memory stays flat (~40 MB) no
+  matter how big the tree is; `MAX_ARCHIVE_BYTES` (1 GB) only exists to skip a
+  pathological repo, and is checked before extraction.
