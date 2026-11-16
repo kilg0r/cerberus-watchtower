@@ -21,3 +21,23 @@ const BY_KEY = Object.fromEntries([...CATEGORIES, WAITING].map((c) => [c.key, c]
 
 export const categoryOf = (key) => BY_KEY[key] || BY_KEY.tool
 export const colorOf = (key) => categoryOf(key).color
+
+// Where the RAM goes. Hues follow the key above where the meaning carries over
+// (the claude process runs the agents, MCP servers are services); validated
+// in this order on #111f33: adjacent CVD ΔE >= 18, normal-vision >= 18.6.
+// "Other apps" is a deliberate neutral below 3:1, so its amount is always
+// printed as text.
+export const MEMORY_PARTS = [
+  { key: 'cli', label: 'Claude', color: '#9085e9', hint: 'the claude processes themselves' },
+  { key: 'mcp', label: 'MCP servers', color: '#0ca30c', hint: 'MCP servers and helpers each session keeps alive' },
+  { key: 'tools', label: 'Tool processes', color: '#3987e5', hint: 'shells and everything tool calls started' },
+  { key: 'other', label: 'Other apps', color: '#5c6370', hint: 'everything else on the machine' },
+]
+
+// The activity timeline: emphasis form - activity in grays, "needs you" in
+// the status color (and drawn taller, so it never relies on color alone).
+export const ACTIVITY = {
+  w: { label: 'Working', color: '#cbd5e1', tall: false },
+  b: { label: 'Background', color: '#64748b', tall: false, hint: 'turn ended, agents or tasks still running' },
+  '!': { label: 'Needs you', color: WAITING.color, tall: true },
+}

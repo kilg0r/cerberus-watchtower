@@ -9,15 +9,21 @@ const props = defineProps({
   height: { type: Number, default: 14 },
   // the y-scale never shrinks below this, so idle noise stays flat
   floor: { type: Number, default: 5 },
+  // false: scale between the window's min and max (memory moves slowly, so a
+  // zero-based line would always read flat); `floor` is then the minimum range
+  zero: { type: Boolean, default: true },
 })
 
 const points = computed(() => {
   const v = props.values
   if (v.length < 2) return ''
-  const max = Math.max(props.floor, ...v)
+  const high = Math.max(...v)
+  const low = props.zero ? 0 : Math.min(...v)
+  const range = props.zero ? Math.max(props.floor, high) : Math.max(props.floor, high - low)
+  const bottom = props.zero ? 0 : (high + low) / 2 - range / 2
   const step = props.width / (v.length - 1)
   return v
-    .map((value, i) => `${(i * step).toFixed(1)},${(props.height - 1 - (value / max) * (props.height - 2)).toFixed(1)}`)
+    .map((value, i) => `${(i * step).toFixed(1)},${(props.height - 1 - ((value - bottom) / range) * (props.height - 2)).toFixed(1)}`)
     .join(' ')
 })
 </script>

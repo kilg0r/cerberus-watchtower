@@ -14,6 +14,7 @@ const props = defineProps({
   now: { type: Number, required: true },
   fetchedAt: { type: Number, required: true },
   cpuHistory: { type: Array, default: () => [] },
+  memHistory: { type: Array, default: () => [] },
   filter: { type: String, default: null },
   popout: { type: Boolean, default: false },
 })
@@ -130,10 +131,13 @@ const phaseCounts = (agents) => {
             CPU <span class="tabular-nums text-slate-200">{{ session.cpu.toFixed(1) }}%</span>
           </span>
         </div>
-        <div>
-          MEM <span class="text-slate-200">{{ megabytes(session.mem_mb) }}</span>
-          <span class="text-slate-600"> · </span>up {{ uptime }}
+        <div class="flex items-center justify-end gap-1.5">
+          <Sparkline :values="memHistory" :zero="false" :floor="64" />
+          <span title="Resident memory of Claude + its tool processes (MCP servers are listed below)">
+            MEM <span class="text-slate-200">{{ megabytes(session.mem_mb) }}</span>
+          </span>
         </div>
+        <div>up {{ uptime }}</div>
       </div>
     </header>
 
@@ -238,7 +242,6 @@ const phaseCounts = (agents) => {
             :op="op"
             :elapsed="elapsedOf(op)"
             :dim="dimOp(op)"
-            compact
           />
           <p v-if="!agent.ops.length" class="px-3 pb-1 text-[10.5px] italic text-slate-500">thinking</p>
         </div>

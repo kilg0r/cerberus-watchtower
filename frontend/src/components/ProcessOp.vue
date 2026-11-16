@@ -11,10 +11,10 @@ const props = defineProps({
   op: { type: Object, required: true },
   elapsed: { type: Number, default: null },
   dim: { type: Boolean, default: false },
-  compact: { type: Boolean, default: false },
 })
 
-const expanded = ref(false)
+// open by default - the whole command, its processes and its output are the point
+const expanded = ref(true)
 const category = computed(() => categoryOf(props.op.category))
 const firstLine = (text) => (text || '').split('\n').find((l) => l.trim()) || ''
 const title = computed(() => props.op.label || firstLine(props.op.detail) || props.op.tool)
@@ -56,36 +56,34 @@ const waiting = computed(() => props.op.category === 'waiting')
       <span class="w-16 shrink-0 text-right font-mono text-[11px] tabular-nums text-slate-400">{{ duration(elapsed) }}</span>
     </div>
 
-    <template v-if="!compact">
-      <button
-        v-if="detailLine"
-        class="mt-0.5 block w-full truncate text-left font-mono text-[10.5px] text-slate-500 hover:text-slate-300"
-        :title="multiline ? 'click to show the whole command' : op.detail"
-        @click="expanded = !expanded"
-      >
-        {{ multiline ? (expanded ? '▾ ' : '▸ ') : '' }}{{ detailLine }}
-      </button>
-      <pre
-        v-if="expanded"
-        class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-navy/80 px-2 py-1.5 font-mono text-[10.5px] leading-4 text-slate-400"
-      >{{ op.detail }}</pre>
+    <button
+      v-if="detailLine"
+      class="mt-0.5 block w-full truncate text-left font-mono text-[10.5px] text-slate-500 hover:text-slate-300"
+      :title="multiline ? (expanded ? 'click to collapse' : 'click to show the whole command') : op.detail"
+      @click="expanded = !expanded"
+    >
+      {{ multiline ? (expanded ? '▾ ' : '▸ ') : '' }}{{ detailLine }}
+    </button>
+    <pre
+      v-if="expanded && multiline"
+      class="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-navy/80 px-2 py-1.5 font-mono text-[10.5px] leading-4 text-slate-400"
+    >{{ op.detail }}</pre>
 
-      <div v-if="op.processes?.length" class="mt-1">
-        <ProcessTree
-          v-for="(proc, i) in op.processes"
-          :key="proc.pid"
-          :node="proc"
-          :hide-cmd="i === 0 && !!op.detail && (proc.cmd || '').startsWith(firstLine(op.detail).slice(0, 60))"
-        />
-      </div>
+    <div v-if="op.processes?.length" class="mt-1">
+      <ProcessTree
+        v-for="(proc, i) in op.processes"
+        :key="proc.pid"
+        :node="proc"
+        :hide-cmd="i === 0 && !!op.detail && (proc.cmd || '').startsWith(firstLine(op.detail).slice(0, 60))"
+      />
+    </div>
 
-      <div
-        v-if="op.tail?.length"
-        class="mt-1 rounded bg-black/30 px-2 py-1 font-mono text-[10px] leading-4 text-slate-400"
-        title="latest output"
-      >
-        <div v-for="(line, i) in op.tail" :key="i" class="truncate">{{ line }}</div>
-      </div>
-    </template>
+    <div
+      v-if="op.tail?.length"
+      class="mt-1 rounded bg-black/30 px-2 py-1 font-mono text-[10px] leading-4 text-slate-400"
+      title="latest output"
+    >
+      <div v-for="(line, i) in op.tail" :key="i" class="truncate">{{ line }}</div>
+    </div>
   </div>
 </template>

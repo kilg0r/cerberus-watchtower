@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import artifacts, browser, config, drift, events, live_processes, notifier, sessions, system_ports
+from . import artifacts, browser, config, drift, events, live_processes, notifier, process_history, sessions, system_ports
 from .ai import narrator, summarizer
 from .db import get_session_factory
 from .scanners import git_scanner, scan_architecture, transcript_parser
@@ -300,7 +300,7 @@ def process_state(view: dict, event: dict | None, now: datetime) -> str:
     return state
 
 
-def _processes_payload() -> dict:
+def _processes_payload(with_history: bool = False) -> dict:
     snap = live_processes.snapshot(sessions.index)
     latest_events = events.latest_by_session()
     table = _repo_table()
@@ -313,12 +313,21 @@ def _processes_payload() -> dict:
         view["project"], view["repo_id"] = label["project"], label["repo_id"]
         view["state"] = process_state(view, latest_events.get(view["session_id"]), now)
     snap["indexing"] = not sessions.index.ready
+    snap["totals"] = process_history.totals(snap)
+    history = process_history.history
+    snap["sampled"] = history.record(snap, now.timestamp())  # false: a cold CPU reading, don't chart it
+    snap["timeline"] = history.timeline({v["session_id"] for v in snap["sessions"]}, now.timestamp())
+    if with_history:  # the page's first load; later polls append their own samples
+        snap["history"] = {
+            "trend": history.trend(),
+            "sparks": history.sparks([v["pid"] for v in snap["sessions"]]),
+        }
     return snap
 
 
 @app.get("/api/processes")
-async def processes() -> dict:
-    return await asyncio.to_thread(_processes_payload)
+async def processes(history: bool = False) -> dict:
+    return await asyncio.to_thread(_processes_payload, history)
 
 
 # ============================== artifacts ==============================

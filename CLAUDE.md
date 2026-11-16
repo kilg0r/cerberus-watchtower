@@ -11,7 +11,7 @@ Windows:
 ```powershell
 .venv\Scripts\python.exe -m watchtower          # run server -> http://127.0.0.1:8765
 scripts\Start-Watchtower.ps1                    # idempotent launcher (-Stop | -NoBrowser); `watchtower` profile fn
-.venv\Scripts\python.exe -m pytest tests/       # run tests (137 passing)
+.venv\Scripts\python.exe -m pytest tests/       # run tests (147 passing)
 cd frontend; npm run dev                        # frontend dev mode (proxies /api to :8765)
 cd frontend; npm run build                      # production build -> frontend/dist
 ```
@@ -22,7 +22,7 @@ macOS:
 .venv/bin/python -m watchtower                  # run server -> http://127.0.0.1:8765
 scripts/watchtower.sh                           # idempotent launcher (--stop | --status | --no-browser); `watchtower` zsh fn
 scripts/install-macos.sh                        # LaunchAgent (start at login) + shell fn (--uninstall)
-.venv/bin/python -m pytest tests/               # run tests (137 passing)
+.venv/bin/python -m pytest tests/               # run tests (147 passing)
 (cd frontend && npm run build)                  # production build -> frontend/dist
 ```
 
@@ -59,6 +59,9 @@ gui/$UID/tech.cerberuslabs.watchtower`**, or `watchtower --stop` followed by
     running-session registry (`~/.claude/sessions/<pid>.json`), the OS
     process trees under each claude pid, and the transcript index's in-flight
     calls / background tasks / subagents into one container per process
+  - `watchtower/process_history.py` - Processes tab history: resource samples
+    recorded per snapshot (trend charts, card sparklines) and a per-session
+    activity timeline binned from hook events + recorded states
   - `watchtower/ai/` - `summarizer` (diff summaries), `narrator` (project
     narratives); both shell out to `claude -p` headless
   - `watchtower/drift.py` - architecture snapshots + structural diffing
@@ -200,6 +203,19 @@ gui/$UID/tech.cerberuslabs.watchtower`**, or `watchtower --stop` followed by
 - **Shell → call matching**: task id in the output redirect, then command
   text, then the latest unclaimed call started before the shell. Leftovers
   are "orphan" processes.
+- **History only exists while watched**: `process_history` records a sample
+  per `/api/processes` call (in memory, 60 min), so trend charts have gaps
+  for time nobody had the page open. `?history=1` (first load only) returns
+  the buffer; later polls append client-side. The first snapshot after a
+  start is not charted (`sampled: false`) - psutil's first CPU reading is 0.
+- **Timeline = hooks, overridden by samples**: 30s bins; a bin with recorded
+  states uses them, any other bin replays hook events (prompt → working, Stop
+  / idle ping → idle, other Notification → waiting). SessionStart is no
+  change (it fires on compaction mid-turn). Hooks can't see a permission
+  being granted for a non-edit tool, so hook-only "waiting" can run long.
+- **Cards are masonry** (`MasonryGrid.vue`): absolutely positioned, measured
+  with a ResizeObserver, each card under the shortest column. Keeps card
+  state on column moves (no remount); ops start expanded.
 
 ## Architecture 3D
 
