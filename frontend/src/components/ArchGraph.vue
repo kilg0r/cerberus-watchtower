@@ -18,6 +18,8 @@ const props = defineProps({
   // node ids to mark as added/changed (dashed emerald halo) - used by the
   // git-history bundle review to overlay the architectural delta on the graph
   highlight: { type: Array, default: null },
+  // folder -> color for the whole solution (stable when showing a subset)
+  palette: { type: Object, default: null },
 })
 const emit = defineEmits(['select', 'focus'])
 
@@ -25,7 +27,7 @@ const container = ref(null)
 let cy = null
 let resizeObserver = null
 
-const folderColors = computed(() => folderColorMap(props.nodes))
+const folderColors = computed(() => props.palette || folderColorMap(props.nodes))
 const computedLegend = computed(() => legendFor(props.nodes, folderColors.value, props.legend))
 const nodeColor = (n) => colorForNode(n, folderColors.value)
 

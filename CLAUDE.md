@@ -11,7 +11,7 @@ Windows:
 ```powershell
 .venv\Scripts\python.exe -m watchtower          # run server -> http://127.0.0.1:8765
 scripts\Start-Watchtower.ps1                    # idempotent launcher (-Stop | -NoBrowser); `watchtower` profile fn
-.venv\Scripts\python.exe -m pytest tests/       # run tests (147 passing)
+.venv\Scripts\python.exe -m pytest tests/       # run tests (148 passing)
 cd frontend; npm run dev                        # frontend dev mode (proxies /api to :8765)
 cd frontend; npm run build                      # production build -> frontend/dist
 ```
@@ -22,7 +22,7 @@ macOS:
 .venv/bin/python -m watchtower                  # run server -> http://127.0.0.1:8765
 scripts/watchtower.sh                           # idempotent launcher (--stop | --status | --no-browser); `watchtower` zsh fn
 scripts/install-macos.sh                        # LaunchAgent (start at login) + shell fn (--uninstall)
-.venv/bin/python -m pytest tests/               # run tests (147 passing)
+.venv/bin/python -m pytest tests/               # run tests (148 passing)
 (cd frontend && npm run build)                  # production build -> frontend/dist
 ```
 
@@ -70,7 +70,8 @@ gui/$UID/tech.cerberuslabs.watchtower`**, or `watchtower --stop` followed by
     `~/.claude/settings.json`)
 - **Frontend**: Vue 3 (`<script setup>`) + Vite + Tailwind v4 + vue-router +
   three.js (3D architecture map, `utils/archScene.js`, lazy chunk) + Cytoscape
-  (2D graph, lazy-loaded). No Pinia - composables only. `?popout=1` on any
+  (2D graph, lazy-loaded) + Shiki (diff syntax colors, `utils/highlighter.js`,
+  core and each grammar lazy). No Pinia - composables only. `?popout=1` on any
   route renders it without the sidebar (the Processes pop-out window).
 - **Data dir**: `~/.cerberus-watchtower/` - `watchtower.db` (caches, snapshots,
   narratives, artifact index), `artifacts/<uuid>/current/` (local artifact
@@ -229,6 +230,52 @@ gui/$UID/tech.cerberuslabs.watchtower`**, or `watchtower --stop` followed by
   captures the pointer on the stage, which retargets clicks away from buttons.
 - Headless screenshots: Edge `--screenshot` doesn't drive rAF. Use Playwright
   (system Python has it) with `--use-angle=swiftshader --enable-unsafe-swiftshader`.
+- **Folder isolation** (legend click, `legendAction="isolate"`) happens in
+  ArchitectureView, not the scene: the folder's projects (`role: member`) plus
+  what they reference (`linked`, Direct/All) and optionally their users
+  (`user`), each with `bundle` = its folder. Nodes with a `bundle` switch the
+  layout to clusters: the bundle holding most primary nodes is the hub in the
+  middle, the others ring it in wedges, and `layout.bundles` anchors the tags.
+  Secondary roles draw smaller and fainter (`emphasis` in the scene).
+- **One palette and legend for the whole solution** (`palette` prop, from
+  `folderColorMap(arch.graph.nodes)`): extra-folder colors are assigned by
+  sorted name, so computing them from a subset recolors folders, and a legend
+  built from the subset moves the chips under the cursor (hover previews then
+  dim the wrong folder).
+- **Scopes** (`utils/archScope.js`): below the project level, dotnet only. A
+  namespace / file / class scope draws classes (links: method calls, sends ->
+  handler, service uses, ctor injection; interfaces stay as hops to their
+  implementations); a method / endpoint scope draws methods (calls, interface
+  dispatch, sends -> `Handle`). Downstream to the chosen depth, callers one
+  hop (12 per node, the rest counted), `SCOPE_LIMIT` 160 nodes. Node ids are
+  prefixed (`t:`, `m:`, `e:`) so they never collide with project ids. A
+  traced flow (`role: flow`) draws full strength and starts fitted
+  (`frameFocus=false`) - flying to the endpoint cut the path off.
+- **The lists drive scopes**: ArchitectureView `provide('archScope', {active,
+  set})`; ProjectMethodsPanel (namespace -> file -> type -> methods),
+  MethodNode (its "3D" button) and DataFlowTable (row click; "Inspect" opens
+  the drawer) call `set`. Picking the active scope again steps out. Esc steps
+  out one level: drawer, scope, isolation, focus.
+- **Types carry `namespace` and `line`** (dotnet scanner). Scans cached before
+  that (History architectural deltas, cached forever per sha) don't - code
+  must fall back (`archScope.namespaceOf` derives it from the folder path).
+
+## Diff reader (`DiffView.vue`)
+
+- Shared by History (commit and bundle files) and the Review Queue. Parsed by
+  `utils/diffParse.js`: hunks end by their own line counts (so a commit
+  message's indented lines aren't read as context), git show headers fold to
+  one line, untracked files arrive as a synthetic `--- /dev/null` hunk.
+- **Each side of a hunk is tokenized as the code it was** (context + removed
+  vs context + added), so multi-line strings and comments color correctly on
+  both sides. VS Code Dark+ over VS Code's TextMate grammars (Shiki, JS regex
+  engine - no wasm); a hunk side over 6000 lines stays plain.
+- Word-level marks pair each removed run with the added run after it (token
+  LCS); a line that changed by more than 60% gets no marks. Unified / Split
+  and Wrap are remembered in localStorage.
+- History's commit message box scrolls inside a height dragged from its
+  bottom edge (`useEdgeResize` with `edge: 'bottom'`; double-click resets) and
+  folds to the subject line; both are remembered.
 
 ## Registry (`repos.toml`)
 

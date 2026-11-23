@@ -14,9 +14,15 @@ const props = defineProps({
 })
 
 const ctx = inject('archCtx')
+// the Architecture view lets any method narrow the 3D map to its call graph
+const archScope = inject('archScope', null)
 const expanded = ref(props.autoExpand)
 
 const key = computed(() => `${props.typeName}.${props.methodName}`)
+const scoped = computed(() => archScope?.active.value === `method:${key.value}`)
+function narrow() {
+  archScope?.set({ kind: 'method', key: key.value, label: `${key.value}()` })
+}
 const isCycle = computed(() => props.trail.includes(key.value))
 const typeInfo = computed(() => ctx.value.types[props.typeName])
 const isInterface = computed(() => typeInfo.value?.kind === 'interface')
@@ -51,8 +57,9 @@ const children = computed(() => {
 
 <template>
   <div>
+    <div class="group/m flex items-center" :class="scoped ? 'rounded bg-coral/10 shadow-[inset_2px_0_0_#ff6b5e]' : ''">
     <button
-      class="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-panel-2/60"
+      class="flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-panel-2/60"
       :disabled="!children.length"
       @click="expanded = !expanded"
     >
@@ -76,6 +83,18 @@ const children = computed(() => {
       <span v-if="typeInfo" class="shrink-0 text-[10px] text-slate-500">{{ typeInfo.project }}</span>
       <span v-if="isCycle" class="shrink-0 text-[10px] text-amber-400" title="already shown above">&circlearrowright; cycle</span>
     </button>
+    <button
+      v-if="archScope"
+      class="mr-1 shrink-0 rounded border px-1.5 py-0.5 text-[10px] transition"
+      :class="scoped
+        ? 'border-coral/50 text-coral'
+        : 'border-edge text-slate-500 opacity-0 hover:border-coral/40 hover:text-coral group-hover/m:opacity-100'"
+      :title="scoped ? 'step back out' : 'narrow the 3D map to this method\'s call graph'"
+      @click.stop="narrow"
+    >
+      3D
+    </button>
+    </div>
 
     <div v-if="expanded && children.length" class="ml-4 border-l border-edge/60 pl-2">
       <template v-for="(child, i) in children" :key="i">

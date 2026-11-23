@@ -14,8 +14,20 @@ const props = defineProps({
   focusId: { type: String, default: null },
   heightClass: { type: String, default: 'h-[480px]' },
   legend: { type: Array, default: null },
+  // legend click: 'highlight' dims everything else; 'isolate' asks the parent
+  // to redraw the map around that folder (hover still previews it)
+  legendAction: { type: String, default: 'highlight' },
+  isolated: { type: String, default: null },
+  // a line under the HUD title naming what the map is narrowed to
+  caption: { type: String, default: null },
+  // folder -> color for the whole solution, so a folder keeps its color when
+  // the map shows only part of it
+  palette: { type: Object, default: null },
+  // fly in to the focus node on build (project focus); a narrowed map that's
+  // read as a whole (a traced flow) starts fitted instead
+  frameFocus: { type: Boolean, default: true },
 })
-const emit = defineEmits(['select', 'focus', 'unsupported'])
+const emit = defineEmits(['select', 'focus', 'unsupported', 'isolate'])
 
 const USES_COLOR = '#ff6b5e'
 const USED_BY_COLOR = '#5cb8ff'
@@ -28,6 +40,9 @@ const canvas = ref(null)
 const fpsEl = ref(null)
 const labelEls = {}
 const layerEls = {}
+const bundleEls = {}
+const tagWidth = {}
+const tagCount = {}
 const ready = ref(false)
 const failed = ref(false)
 // a disposed renderer force-loses its canvas's WebGL context, so every
@@ -51,7 +66,7 @@ watch(autoRotate, (v) => {
 
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-const folderColors = computed(() => folderColorMap(props.nodes))
+const folderColors = computed(() => props.palette || folderColorMap(props.nodes))
 const legendItems = computed(() => legendFor(props.nodes, folderColors.value, props.legend))
 const groupOf = (n) => n.folder || (props.legend ? n.kind : 'other')
 
@@ -65,6 +80,22 @@ const degree = computed(() => {
 })
 const byId = computed(() => new Map(props.nodes.map((n) => [n.id, n])))
 const colorOf = (n) => nodeColor(n, folderColors.value)
+const PRIMARY_ROLES = new Set([undefined, null, 'scope', 'member', 'flow'])
+const clustered = computed(() => props.nodes.some((n) => n.bundle))
+// the bundle holding most of the subject (isolated folder, scope) takes the middle
+const hubKey = computed(() => {
+  if (!clustered.value) return null
+  const counts = new Map()
+  for (const n of props.nodes) if (PRIMARY_ROLES.has(n.role)) counts.set(n.bundle, (counts.get(n.bundle) || 0) + 1)
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+})
+// bundle name tags: the color of the bundle's first member
+const bundleTags = computed(() =>
+  (layout.value?.bundles || []).map((b) => {
+    const first = props.nodes.find((n) => n.bundle === b.key)
+    return { ...b, color: first ? colorOf(first) : '#94a3b8' }
+  })
+)
 
 // tour order for the keyboard: top layer first, then by name
 const tour = computed(() => {
@@ -113,7 +144,8 @@ const labelPriority = computed(() => {
   const near = new Set([...neighbours(selectedId.value), ...neighbours(hoveredId.value)])
   for (const id of labelIds.value) {
     const emphasis = id === selectedId.value || id === hoveredId.value || id === props.focusId
-    prio[id] = emphasis ? 0 : near.has(id) ? 1 : 2 - Math.min(0.99, (degree.value[id] || 0) / 1000)
+    const primary = clustered.value && PRIMARY_ROLES.has(byId.value.get(id)?.role)
+    prio[id] = emphasis ? 0 : near.has(id) ? 1 : primary ? 1.5 : 2 - Math.min(0.99, (degree.value[id] || 0) / 1000)
   }
   return prio
 })
@@ -176,6 +208,23 @@ function onFrame(f) {
     el.style.transform = `translate3d(${l.x.toFixed(1)}px, ${l.y.toFixed(1)}px, 0)`
     el.style.opacity = l.visible ? '1' : '0'
   }
+  // bundle tags: the hub and the biggest bundles win when two would overlap
+  const tags = []
+  for (const b of f.bundles || []) {
+    const el = bundleEls[b.key]
+    if (!el) continue
+    el.style.transform = `translate3d(${b.x.toFixed(1)}px, ${b.y.toFixed(1)}px, 0)`
+    tags.push({ b, el, rank: b.key === hubKey.value ? -1 : -(tagCount[b.key] || 0) })
+  }
+  tags.sort((a, b) => a.rank - b.rank)
+  const taken = []
+  for (const { b, el } of tags) {
+    const w = (tagWidth[b.key] ||= el.offsetWidth || 90)
+    const box = { l: b.x - w / 2, r: b.x + w / 2, t: b.y - 22, b: b.y }
+    const hit = taken.some((p) => box.l < p.r && box.r > p.l && box.t < p.b && box.b > p.t)
+    el.style.opacity = b.visible && !hit ? '1' : '0'
+    if (b.visible && !hit) taken.push(box)
+  }
   if (frameCount++ % 15 === 0 && fpsEl.value) fpsEl.value.textContent = String(f.fps || '--').padStart(3, ' ')
 }
 
@@ -210,9 +259,14 @@ async function build() {
     id: n.id,
     color: colorOf(n),
     group: groupOf(n),
+    bundle: n.bundle,
+    emphasis: PRIMARY_ROLES.has(n.role) ? 'primary' : 'secondary',
     degree: degree.value[n.id] || 0,
   }))
-  layout.value = mod.layoutGraph(sceneNodes, props.edges, { layered: layered.value })
+  layout.value = mod.layoutGraph(sceneNodes, props.edges, { layered: layered.value, cluster: clustered.value, hub: hubKey.value })
+  for (const key of Object.keys(tagWidth)) delete tagWidth[key]
+  for (const key of Object.keys(tagCount)) delete tagCount[key]
+  for (const b of layout.value.bundles || []) tagCount[b.key] = b.count
   try {
     engine = mod.createArchScene({
       canvas: canvas.value,
@@ -221,6 +275,7 @@ async function build() {
       edges: props.edges,
       layout: layout.value,
       focusId: props.focusId,
+      frameFocus: props.frameFocus,
       reducedMotion,
       onFrame,
       onHover: (id) => (hoveredId.value = id),
@@ -252,6 +307,16 @@ function toggleGroup(label) {
   group.value = group.value === label ? null : label
   engine?.setGroup(group.value)
 }
+
+function onLegendClick(label) {
+  if (props.legendAction === 'isolate') emit('isolate', label)
+  else toggleGroup(label)
+}
+// isolate mode: hovering a folder previews it before the click redraws
+function previewGroup(label) {
+  if (props.legendAction === 'isolate') engine?.setGroup(label || group.value)
+}
+const legendActive = (label) => group.value === label || props.isolated === label
 
 function step(delta) {
   const list = tour.value
@@ -323,6 +388,19 @@ const relationStyle = (id) => {
         </span>
       </div>
 
+      <!-- bundle tags (isolated folders, narrowed scopes): positioned every frame -->
+      <div class="pointer-events-none absolute inset-0" aria-hidden="true">
+        <span
+          v-for="b in bundleTags"
+          :key="b.key"
+          :ref="(el) => (bundleEls[b.key] = el)"
+          class="arch-bundle"
+          :style="{ '--node': b.color }"
+        >
+          <span class="arch-bundle-bar" />{{ b.key }} <span class="text-white/35">· {{ b.count }}</span>
+        </span>
+      </div>
+
       <!-- node labels: positioned every frame by onFrame -->
       <div class="pointer-events-none absolute inset-0">
         <button
@@ -353,6 +431,7 @@ const relationStyle = (id) => {
         <p class="mt-0.5 text-white/40">
           {{ nodes.length }} NODES · {{ edges.length }} LINKS<template v-if="layout?.layers?.length"> · {{ layout.layers.length }} LAYERS</template>
         </p>
+        <p v-if="caption" class="mt-0.5 max-w-[40vw] truncate text-coral/80">{{ caption }}</p>
       </div>
       <div class="arch-hud pointer-events-none absolute right-4 top-3 text-right" aria-hidden="true">
         <p class="text-white/40">VIEW <span class="text-white/75">{{ layered ? 'LAYERED' : 'FREE' }}</span></p>
@@ -360,7 +439,7 @@ const relationStyle = (id) => {
       </div>
 
       <!-- controls -->
-      <div class="absolute left-3 top-12 flex items-center gap-1.5" data-arch-ui @pointerdown.stop>
+      <div class="absolute left-3 flex items-center gap-1.5" :class="caption ? 'top-[3.75rem]' : 'top-12'" data-arch-ui @pointerdown.stop>
         <div class="flex overflow-hidden rounded-md border border-white/10 bg-[#070d1a]/70 backdrop-blur">
           <button
             type="button"
@@ -422,10 +501,16 @@ const relationStyle = (id) => {
           :key="item.label"
           type="button"
           class="arch-key"
-          :class="{ 'is-active': group === item.label }"
+          :class="{ 'is-active': legendActive(item.label) }"
           :style="{ '--node': item.color }"
-          :title="group === item.label ? 'show everything' : `isolate ${item.label}`"
-          @click="toggleGroup(item.label)"
+          :title="legendActive(item.label)
+            ? 'show everything'
+            : legendAction === 'isolate'
+              ? `isolate ${item.label} and the libraries it links to`
+              : `highlight ${item.label}`"
+          @click="onLegendClick(item.label)"
+          @pointerenter="previewGroup(item.label)"
+          @pointerleave="previewGroup(null)"
         >
           <span class="arch-dot" />{{ item.label }}
         </button>
@@ -495,6 +580,34 @@ const relationStyle = (id) => {
   will-change: transform, opacity;
 }
 
+.arch-bundle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+  translate: -50% -100%;
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--node) 70%, white);
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--node) 12%, rgba(5, 8, 22, 0.7));
+  border: 1px solid color-mix(in srgb, var(--node) 35%, transparent);
+  will-change: transform, opacity;
+  transition: opacity 0.3s;
+}
+.arch-bundle-bar {
+  width: 3px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--node);
+}
 .arch-label {
   position: absolute;
   left: 0;

@@ -15,7 +15,10 @@ single screen, sized to whatever viewport it's given.
 ### Review Queue
 Uncommitted work across every registered repo, refreshed every 30 seconds:
 branch, ahead/behind upstream, per-file diffstat, last commit. Click any file
-for its colorized unified diff. One button generates an AI summary of the
+for its diff - in the file's own syntax colors (the VS Code Dark+ theme, on
+the removed side too), with line numbers, the changed words marked inside
+substituted lines, and a unified or side-by-side layout. One button generates
+an AI summary of the
 pending changes - intent, modules touched, risk flags - cached by diff hash so
 it only regenerates when the changes change.
 
@@ -93,13 +96,22 @@ gets a view relevant to its language:
   horizontal planes, with entry points on top and each dependency below
   everything that uses it. **Free** is a 3D force layout. Packets run along
   every line from a project to what it uses. Select a node and its dependencies
-  light up coral, its dependents blue, while the camera flies to it. Legend
-  chips isolate a group. Drag to orbit, right-drag to pan, scroll to zoom,
-  arrow keys step through nodes.
+  light up coral, its dependents blue, while the camera flies to it. Click a
+  solution folder in the legend (Infrastructure, Core, ...) to redraw the map
+  around it: its projects in the middle, the libraries they link to grouped by
+  folder around them (direct or all the way down, optionally with who uses
+  it). Drag to orbit, right-drag to pan, scroll to zoom, arrow keys step
+  through nodes.
 - **Interactivity** - double-click any node to focus on its dependency
-  neighborhood (depth-selectable, screen-wide). Click any .NET endpoint to open
-  the call-flow inspector and drill from controller to the services that do the
-  work, including nested MediatR dispatches.
+  neighborhood (depth-selectable, screen-wide). Below a focused .NET project,
+  its code is listed as namespaces -> files -> types -> methods: click any of
+  them to narrow the map to it - classes and what they call, inject and send,
+  or a method's exact call path - with the scope full size, what it reaches
+  and who calls it around it, grouped by project. Click an endpoint in the
+  data flows to trace its request: route -> handler -> services ->
+  implementations, layer by layer. "Inspect" opens the call-flow drawer to
+  drill from controller to the services that do the work, including nested
+  MediatR dispatches.
 - **Drift detection** - every structural change records a snapshot; the diff
   between the last two (new/removed dependency edges, endpoints, modules,
   routes, package bumps) surfaces as a "changes detected" chip. The day a
@@ -120,7 +132,7 @@ external/LAN flags.
 | Layer | Tech |
 |---|---|
 | Backend | Python 3.12, FastAPI, SQLAlchemy + SQLite, port 8765 |
-| Frontend | Vue 3, Vite, Tailwind CSS v4, three.js (3D architecture map), Cytoscape.js (2D dagre graph) |
+| Frontend | Vue 3, Vite, Tailwind CSS v4, three.js (3D architecture map), Cytoscape.js (2D dagre graph), Shiki (diff syntax colors) |
 | AI | Claude Code CLI in headless mode (`claude -p`), hash-keyed caching |
 | Agent feed | Claude Code hooks → append-only JSONL → SSE |
 

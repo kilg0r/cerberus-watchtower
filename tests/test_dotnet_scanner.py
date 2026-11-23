@@ -173,6 +173,20 @@ def test_analyze_maps_endpoints_to_handlers(dotnet_repo: Path):
     assert create["handler"] is None  # no handler exists for this one
 
 
+def test_types_know_their_namespace_and_line(dotnet_repo: Path):
+    (dotnet_repo / "Demo.App" / "Services" / "Legacy.cs").write_text(
+        "using System;\n\nnamespace Demo.App.Legacy\n{\n    public class OldPricing { }\n}\n"
+        "namespace Demo.App.Legacy.Inner {\n    public record Quote(decimal Amount);\n}\n",
+        encoding="utf-8",
+    )
+    types = analyze(dotnet_repo)["types"]
+    assert types["OrderService"]["namespace"] == "Demo.App.Services"  # file-scoped
+    assert types["OldPricing"]["namespace"] == "Demo.App.Legacy"  # block
+    assert types["Quote"]["namespace"] == "Demo.App.Legacy.Inner"  # the nearest one above
+    assert types["OldPricing"]["line"] == 5
+    assert types["GetOrdersQuery"]["namespace"] == "Demo.App.Queries"
+
+
 def test_analyze_returns_none_without_solution(tmp_path: Path):
     assert analyze(tmp_path) is None
 

@@ -74,7 +74,7 @@ async function toggle() {
     <div v-if="expanded" class="mb-2 ml-7 mt-1">
       <p v-if="loading" class="py-2 text-xs text-slate-500">Loading diff&hellip;</p>
       <p v-else-if="error" class="py-2 text-xs text-red-400">{{ error }}</p>
-      <DiffView v-else-if="diff" :diff="diff" />
+      <DiffView v-else-if="diff" :diff="diff" :path="file.path" />
     </div>
   </div>
 </template>

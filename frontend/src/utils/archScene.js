@@ -121,9 +121,15 @@ export function rankNodes(count, links) {
  * (entry points on top), nodes spread on it by a force simulation that only
  * moves them sideways. Free: a plain 3D force layout. Seeded, so the same
  * graph always lands the same way.
- * @returns {{positions: Map<string, Vector3>, ranks: Map<string, number>, layers: {rank:number,y:number,radius:number,count:number}[], radius: number, height: number, width: number}}
+ *
+ * `cluster`: nodes sharing a `bundle` (a solution folder, a project) are
+ * gathered into one wedge of the map - every layer of a bundle in the same
+ * direction - and `bundles` reports where to label each one. With a `hub`
+ * bundle (the isolated folder, the scope's own project) that one holds the
+ * middle and the others ring it, each in its own wedge.
+ * @returns {{positions: Map<string, Vector3>, ranks: Map<string, number>, layers: {rank:number,y:number,radius:number,count:number}[], bundles: {key:string,count:number,anchor:Vector3}[], radius: number, height: number, width: number}}
  */
-export function layoutGraph(nodes, edges, { layered = true, seed = 7 } = {}) {
+export function layoutGraph(nodes, edges, { layered = true, seed = 7, cluster = false, hub = null } = {}) {
   const n = nodes.length
   const index = new Map(nodes.map((node, i) => [node.id, i]))
   const links = []
@@ -152,9 +158,54 @@ export function layoutGraph(nodes, edges, { layered = true, seed = 7 } = {}) {
   for (const [a, b] of links) users[b].push(a)
   const byRank = Array.from({ length: maxRank + 1 }, () => [])
   rank.forEach((r, i) => byRank[r].push(i))
+
+  // clustered: each bundle owns a sector of the circle, sized by its members
+  const bundleOf = (i) => nodes[i].bundle ?? nodes[i].group ?? ''
+  const sectors = new Map()
+  const isHub = (i) => cluster && hub != null && bundleOf(i) === hub
+  let hubRadius = 0
+  let ringMin = 0
+  if (cluster) {
+    const sizes = new Map()
+    for (let i = 0; i < n; i++) if (!isHub(i)) sizes.set(bundleOf(i), (sizes.get(bundleOf(i)) || 0) + 1)
+    const order = [...sizes].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    const weight = (count) => Math.sqrt(count) + 0.6
+    const total = order.reduce((s, [, c]) => s + weight(c), 0)
+    let at = 0
+    for (const [key, count] of order) {
+      const width = (weight(count) / total) * Math.PI * 2
+      sectors.set(key, { start: at, width })
+      at += width
+    }
+    if (hub != null) {
+      const perLayer = new Map()
+      for (let i = 0; i < n; i++) if (isHub(i)) perLayer.set(rank[i], (perLayer.get(rank[i]) || 0) + 1)
+      const widest = Math.max(1, ...perLayer.values())
+      hubRadius = 0.75 * Math.sqrt(layered ? widest : [...perLayer.values()].reduce((a, b) => a + b, 0)) + 0.3
+      ringMin = hubRadius + 2.4
+    }
+  }
+
   for (let r = 0; r <= maxRank; r++) {
     const members = byRank[r]
-    if (r === 0) {
+    if (cluster) {
+      // spread each bundle's members on this layer across its own sector
+      const perBundle = new Map()
+      for (const i of members) {
+        const key = bundleOf(i)
+        if (!perBundle.has(key)) perBundle.set(key, [])
+        perBundle.get(key).push(i)
+      }
+      for (const [key, list] of perBundle) {
+        list.sort((a, b) => (nodes[a].id < nodes[b].id ? -1 : 1))
+        if (hub != null && key === hub) {
+          list.forEach((i, k) => (angle[i] = (k / list.length) * Math.PI * 2))
+          continue
+        }
+        const { start, width } = sectors.get(key)
+        list.forEach((i, k) => (angle[i] = start + width * ((k + 0.5) / list.length) * 0.8 + width * 0.1))
+      }
+    } else if (r === 0) {
       members.sort((a, b) => (nodes[a].group || '').localeCompare(nodes[b].group || ''))
       members.forEach((i, k) => (angle[i] = (k / Math.max(1, members.length)) * Math.PI * 2))
     } else {
@@ -175,7 +226,8 @@ export function layoutGraph(nodes, edges, { layered = true, seed = 7 } = {}) {
     }
     const radius = 0.9 * Math.sqrt(members.length) + 0.4
     for (const i of members) {
-      const rr = radius * (0.55 + 0.45 * random())
+      let rr = radius * (0.55 + 0.45 * random())
+      if (hub != null && cluster) rr = isHub(i) ? hubRadius * (0.35 + 0.65 * random()) : ringMin + random()
       x[i] = Math.cos(angle[i]) * rr
       z[i] = Math.sin(angle[i]) * rr
       y[i] = layered ? (maxRank / 2 - r) * gap : (random() - 0.5) * radius * 2
@@ -232,6 +284,40 @@ export function layoutGraph(nodes, edges, { layered = true, seed = 7 } = {}) {
       dy[b] -= (ey / d) * f
       dz[b] -= (ez / d) * f
     }
+    if (cluster) {
+      // bundle cohesion: everyone drifts toward their bundle's middle
+      const centers = new Map()
+      for (let i = 0; i < n; i++) {
+        const key = bundleOf(i)
+        const c = centers.get(key) || { x: 0, y: 0, z: 0, n: 0 }
+        c.x += x[i]
+        c.y += y[i]
+        c.z += z[i]
+        c.n++
+        centers.set(key, c)
+      }
+      for (let i = 0; i < n; i++) {
+        if (hub != null) {
+          const d = Math.hypot(x[i], z[i]) || 1e-3
+          if (isHub(i)) {
+            // the hub keeps the middle
+            dx[i] -= x[i] * 0.06
+            dz[i] -= z[i] * 0.06
+            continue
+          }
+          // everything else stays out on the ring around it
+          if (d < ringMin) {
+            dx[i] += (x[i] / d) * (ringMin - d) * 0.25
+            dz[i] += (z[i] / d) * (ringMin - d) * 0.25
+          }
+        }
+        const c = centers.get(bundleOf(i))
+        if (c.n < 2) continue
+        dx[i] += (c.x / c.n - x[i]) * 0.05
+        dz[i] += (c.z / c.n - z[i]) * 0.05
+        if (!layered) dy[i] += (c.y / c.n - y[i]) * 0.05
+      }
+    }
     const step = 0.08 + 0.55 * cool
     for (let i = 0; i < n; i++) {
       dx[i] -= x[i] * gravity
@@ -275,7 +361,36 @@ export function layoutGraph(nodes, edges, { layered = true, seed = 7 } = {}) {
   const layers = layered
     ? byRank.map((members, r) => ({ rank: r, y: (maxRank / 2 - r) * gap, radius: layerRadius[r] + 0.9, count: members.length }))
     : []
-  return { positions, ranks, layers, radius, height, width }
+
+  // where each bundle's name goes: just outside and above its wedge
+  const bundles = []
+  if (cluster) {
+    const groups = new Map()
+    nodes.forEach((node, i) => {
+      const key = bundleOf(i)
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(positions.get(node.id))
+    })
+    for (const [key, ps] of groups) {
+      const c = new Vector3()
+      ps.forEach((p) => c.add(p))
+      c.multiplyScalar(1 / ps.length)
+      let top = -Infinity
+      let reach = 0
+      for (const p of ps) {
+        top = Math.max(top, p.y)
+        reach = Math.max(reach, Math.hypot(p.x - c.x, p.z - c.z))
+      }
+      const dir = new Vector3(c.x, 0, c.z)
+      if (dir.lengthSq() < 1e-4) dir.set(0, 0, 1)
+      dir.normalize()
+      const anchor = layered
+        ? new Vector3(c.x, top + 0.8, c.z).addScaledVector(dir, Math.min(reach, 2) * 0.5)
+        : c.clone().add(new Vector3(0, reach + 0.8, 0))
+      bundles.push({ key, count: ps.length, anchor })
+    }
+  }
+  return { positions, ranks, layers, bundles, radius, height, width }
 }
 
 // ── Shaders ─────────────────────────────────────────────────────────────────
@@ -386,6 +501,7 @@ function bezier(p0, c, p1, t, out) {
  * @param {{source: string, target: string}[]} opts.edges
  * @param {ReturnType<typeof layoutGraph>} opts.layout
  * @param {string|null} [opts.focusId] a node to mark (focus mode)
+ * @param {boolean} [opts.frameFocus] start flown in to the focus node (else the whole map)
  * @param {boolean} [opts.reducedMotion]
  * @param {(frame: object) => void} opts.onFrame after every render
  * @param {(id: string|null) => void} opts.onHover
@@ -393,7 +509,7 @@ function bezier(p0, c, p1, t, out) {
  * @param {(id: string) => void} opts.onFocus double-click on a node
  * Throws if WebGL isn't available.
  */
-export function createArchScene({ canvas, el, nodes: nodeDefs, edges: edgeDefs, layout, focusId = null, reducedMotion = false, onFrame, onHover, onSelect, onFocus }) {
+export function createArchScene({ canvas, el, nodes: nodeDefs, edges: edgeDefs, layout, focusId = null, frameFocus = true, reducedMotion = false, onFrame, onHover, onSelect, onFocus }) {
   const renderer = new WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' })
   renderer.setClearColor(0x000000, 0)
 
@@ -411,12 +527,15 @@ export function createArchScene({ canvas, el, nodes: nodeDefs, edges: edgeDefs, 
 
   const R = Math.max(4, layout.radius)
   const n = nodeDefs.length
+  // secondary nodes (what an isolated folder links to, what a scope reaches)
+  // are drawn smaller and fainter than the subject itself
   const nodes = nodeDefs.map((def, i) => ({
     ...def,
     index: i,
     pos: layout.positions.get(def.id) || new Vector3(),
     color: new Color(def.color),
-    size: 0.55 + 0.16 * Math.sqrt(def.degree || 0),
+    base: def.emphasis === 'secondary' ? 0.62 : 1,
+    size: (0.55 + 0.16 * Math.sqrt(def.degree || 0)) * (def.emphasis === 'secondary' ? 0.74 : 1),
     x: 0,
     y: 0,
     dist: 0,
@@ -713,9 +832,9 @@ export function createArchScene({ canvas, el, nodes: nodeDefs, edges: edgeDefs, 
       packetSize.array[k] = hi ? 0.75 : 0.5
     })
     nodes.forEach((node, i) => {
-      let alpha = 1
+      let alpha = node.base
       if (subject) alpha = near.has(node.id) ? 1 : 0.14
-      else if (groupKey) alpha = node.group === groupKey ? 1 : 0.14
+      else if (groupKey) alpha = node.group === groupKey ? Math.max(node.base, 0.8) : 0.14
       node.alpha = alpha
       haloAlpha.array[i] = 0.5 * alpha
       coreAlpha.array[i] = alpha
@@ -831,7 +950,9 @@ export function createArchScene({ canvas, el, nodes: nodeDefs, edges: edgeDefs, 
   let fps = 0
   const frameNodes = nodes.map((node) => ({ id: node.id, x: 0, y: 0, depth: 0, visible: false, alpha: 1 }))
   const frameLayers = layerAnchors.map((layer) => ({ rank: layer.rank, count: layer.count, x: 0, y: 0, visible: false }))
-  const frame = { nodes: frameNodes, layers: frameLayers, fps: 0, hover: null, dragging: false }
+  const bundleAnchors = layout.bundles || []
+  const frameBundles = bundleAnchors.map((b) => ({ key: b.key, x: 0, y: 0, visible: false }))
+  const frame = { nodes: frameNodes, layers: frameLayers, bundles: frameBundles, fps: 0, hover: null, dragging: false }
   const v = new Vector3()
   const tmp = new Vector3()
   const pxPerUnit = () => shared.uScale.value / renderer.getPixelRatio()
@@ -879,6 +1000,12 @@ export function createArchScene({ canvas, el, nodes: nodeDefs, edges: edgeDefs, 
     })
     frameLayers.forEach((f, i) => {
       tmp.copy(layerAnchors[i].anchor).project(camera)
+      f.visible = tmp.z < 1 && tmp.z > -1
+      f.x = (tmp.x * 0.5 + 0.5) * size.w
+      f.y = (-tmp.y * 0.5 + 0.5) * size.h
+    })
+    frameBundles.forEach((f, i) => {
+      tmp.copy(bundleAnchors[i].anchor).project(camera)
       f.visible = tmp.z < 1 && tmp.z > -1
       f.x = (tmp.x * 0.5 + 0.5) * size.w
       f.y = (-tmp.y * 0.5 + 0.5) * size.h
@@ -945,7 +1072,7 @@ export function createArchScene({ canvas, el, nodes: nodeDefs, edges: edgeDefs, 
   camera.position.copy(home.position)
   controls.maxDistance = Math.max(R * 7, fitDistance() * 2.5)
   controls.update()
-  if (focusId && nodeById.has(focusId)) flyToNode(focusId)
+  if (frameFocus && focusId && nodeById.has(focusId)) flyToNode(focusId)
   updateRunning()
 
   return {

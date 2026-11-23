@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { apiFetch } from '../composables/useApi'
 import { provideArchContext } from '../composables/useArchContext'
 import { useEdgeResize } from '../composables/useEdgeResize'
@@ -10,6 +10,8 @@ import DriftPanel from '../components/DriftPanel.vue'
 import FlowInspector from '../components/FlowInspector.vue'
 import ProjectMethodsPanel from '../components/ProjectMethodsPanel.vue'
 import SplitPane from '../components/SplitPane.vue'
+import { folderColorMap, legendFor } from '../utils/archColors'
+import { buildScopeGraph, SCOPE_LIMIT, scopeId } from '../utils/archScope'
 
 // node detail overlay on the graph - drag its left edge to widen
 const aside = useEdgeResize('arch-aside', { initial: 448, min: 280, max: 880, edge: 'left' })
@@ -62,7 +64,7 @@ watch(view3d, (on) => {
 const show3d = computed(() => view3d.value && !webglFailed.value)
 
 // shared lookup context for FlowNode/MethodNode drilling (dotnet only)
-provideArchContext(arch)
+const ctx = provideArchContext(arch)
 
 const isOverview = computed(() => selectedId.value === ALL)
 const hasGraph = computed(() => Boolean(arch.value?.graph?.nodes?.length))
@@ -100,14 +102,106 @@ const focusIds = computed(() => {
   return keep
 })
 
-const visibleNodes = computed(() =>
-  focusIds.value ? baseNodes.value.filter((n) => focusIds.value.has(n.id)) : baseNodes.value
+// ---- folder isolation: one solution folder and the libraries it links to ----
+const isolated = ref(null)
+const isolateDepth = ref(1)
+const isolateUsers = ref(false)
+const ISOLATE_DEPTHS = [
+  { label: 'Direct', value: 1 },
+  { label: 'All', value: 99 },
+]
+const folderKey = (n) => n.folder || (LEGENDS[stack.value] ? n.kind : 'other')
+const isolation = computed(() => {
+  if (!isolated.value || !arch.value?.graph) return null
+  const allowed = new Set(baseNodes.value.map((n) => n.id))
+  const roles = new Map()
+  for (const n of baseNodes.value) if (folderKey(n) === isolated.value) roles.set(n.id, 'member')
+  const edges = arch.value.graph.edges
+  let frontier = new Set(roles.keys())
+  for (let hop = 0; hop < isolateDepth.value && frontier.size; hop++) {
+    const next = new Set()
+    for (const e of edges) {
+      if (frontier.has(e.source) && allowed.has(e.target) && !roles.has(e.target)) {
+        roles.set(e.target, 'linked')
+        next.add(e.target)
+      }
+    }
+    frontier = next
+  }
+  if (isolateUsers.value) {
+    for (const e of edges) {
+      if (roles.get(e.target) === 'member' && allowed.has(e.source) && !roles.has(e.source)) roles.set(e.source, 'user')
+    }
+  }
+  return roles
+})
+const isolationCounts = computed(() => {
+  const counts = { member: 0, linked: 0, user: 0 }
+  for (const role of isolation.value?.values() || []) counts[role]++
+  return counts
+})
+
+// ---- scope: a namespace, file, class, method or endpoint, drawn below the
+// project level (dotnet) - chosen from the lists under the graph ----
+const scope = ref(null)
+const scopeDepth = ref(2)
+const scopeCallers = ref(true)
+const SCOPE_DEPTHS = [
+  { label: '1', value: 1 },
+  { label: '2', value: 2 },
+  { label: '3', value: 3 },
+  { label: 'All', value: 99 },
+]
+const scopeGraph = computed(() =>
+  scope.value && stack.value === 'dotnet' && arch.value
+    ? buildScopeGraph(arch.value, ctx.value, scope.value, { depth: scopeDepth.value, callers: scopeCallers.value })
+    : null
 )
+function setScope(next) {
+  // picking the active scope again steps back out of it
+  scope.value = next && scopeId(next) === scopeId(scope.value) ? null : next
+  isolated.value = null
+  selectedNode.value = null
+  narrative.value = null
+  inspected.value = null
+}
+provide('archScope', { active: computed(() => scopeId(scope.value)), set: setScope })
+
+function traceEndpoint(e) {
+  setScope({ kind: 'endpoint', key: `${e.verb} ${e.route}`, label: `${e.verb} ${e.route}`, endpoint: e })
+}
+const activeEndpoint = computed(() => (scope.value?.kind === 'endpoint' ? scope.value.key : null))
+
+const visibleNodes = computed(() => {
+  if (scopeGraph.value) return scopeGraph.value.nodes
+  if (isolation.value) {
+    return baseNodes.value
+      .filter((n) => isolation.value.has(n.id))
+      .map((n) => ({ ...n, role: isolation.value.get(n.id), bundle: folderKey(n) }))
+  }
+  return focusIds.value ? baseNodes.value.filter((n) => focusIds.value.has(n.id)) : baseNodes.value
+})
 const visibleEdges = computed(() => {
+  if (scopeGraph.value) return scopeGraph.value.edges
   if (!arch.value?.graph) return []
   const ids = new Set(visibleNodes.value.map((n) => n.id))
   return arch.value.graph.edges.filter((e) => ids.has(e.source) && ids.has(e.target))
 })
+const graphFocusId = computed(() => (scopeGraph.value ? scopeGraph.value.focusId : focusId.value))
+// one palette and one legend for the whole solution: a folder keeps its color
+// and its legend slot however much of the map is showing
+const palette = computed(() => folderColorMap(arch.value?.graph?.nodes || []))
+const graphLegend = computed(() => {
+  if (LEGENDS[stack.value]) return LEGENDS[stack.value]
+  return legendFor(scopeGraph.value ? visibleNodes.value : baseNodes.value, palette.value)
+})
+const graphMode = computed(() => (focusId.value || scope.value || isolated.value ? 'focus' : 'overview'))
+const caption = computed(() => {
+  if (scope.value) return `${scope.value.kind} · ${scope.value.label}`
+  if (isolated.value) return `isolated · ${isolated.value}`
+  return null
+})
+const scopeNoun = computed(() => (scopeGraph.value?.level === 'method' ? 'methods' : 'classes'))
 
 const focusEndpoints = computed(() => {
   if (!focusId.value || stack.value !== 'dotnet') return []
@@ -119,16 +213,50 @@ const focusEndpoints = computed(() => {
 const nodeRefs = computed(() => {
   if (!selectedNode.value || !arch.value?.graph) return { uses: [], usedBy: [] }
   const id = selectedNode.value.id
+  const scoped = !!scopeGraph.value
+  const edges = scoped ? visibleEdges.value : arch.value.graph.edges
+  const byId = new Map(visibleNodes.value.map((n) => [n.id, n]))
+  const entry = (other, kind) => ({ id: other, label: scoped ? byId.get(other)?.label || other : other, kind })
   return {
-    uses: arch.value.graph.edges.filter((e) => e.source === id).map((e) => e.target),
-    usedBy: arch.value.graph.edges.filter((e) => e.target === id).map((e) => e.source),
+    uses: edges.filter((e) => e.source === id).map((e) => entry(e.target, e.kind)),
+    usedBy: edges.filter((e) => e.target === id).map((e) => entry(e.source, e.kind)),
   }
 })
+const scopedNode = computed(() => !!scopeGraph.value && !!selectedNode.value)
+const selectedMethods = computed(() =>
+  selectedNode.value?.kind !== 'method' && selectedNode.value?.typeName
+    ? ctx.value.classMethods[selectedNode.value.typeName] || []
+    : []
+)
 
 function setFocus(id) {
   focusId.value = id
+  isolated.value = null
+  scope.value = null
   selectedNode.value = null
   narrative.value = null
+}
+
+function isolate(label) {
+  isolated.value = isolated.value === label ? null : label
+  focusId.value = null
+  scope.value = null
+  selectedNode.value = null
+  narrative.value = null
+}
+
+// double-click / Enter / "Narrow to this": in a scoped map, re-scope on the
+// node; on the project map, focus the project
+function onGraphFocus(id) {
+  if (!scopeGraph.value) return setFocus(id)
+  const node = visibleNodes.value.find((n) => n.id === id)
+  if (!node) return
+  if (node.kind === 'endpoint') inspected.value = node.endpoint
+  else if (node.kind === 'method') setScope({ kind: 'method', key: `${node.typeName}.${node.methodName}`, label: node.label })
+  else if (node.typeName) setScope({ kind: 'class', key: node.typeName, label: node.typeName })
+}
+function scopeMethod(typeName, method) {
+  setScope({ kind: 'method', key: `${typeName}.${method}`, label: `${typeName}.${method}()` })
 }
 
 function selectNode(node) {
@@ -183,6 +311,8 @@ async function loadOverview(force = false) {
 async function load(force = false) {
   selectedNode.value = null
   focusId.value = null
+  isolated.value = null
+  scope.value = null
   inspected.value = null
   narrative.value = null
   showDrift.value = false
@@ -254,6 +384,8 @@ const groupedOverview = computed(() => {
 function onKeydown(event) {
   if (event.key === 'Escape') {
     if (inspected.value) inspected.value = null
+    else if (scope.value) setScope(null)
+    else if (isolated.value) isolate(null)
     else if (focusId.value) setFocus(null)
   }
 }
@@ -278,11 +410,28 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       <div>
         <h1 class="text-xl font-semibold text-white">Architecture</h1>
         <p class="mt-1 text-sm text-slate-500">
-          <template v-if="focusId">
+          <template v-if="focusId || isolated || scope">
             <button class="text-coral hover:underline" @click="setFocus(null)">{{ selectedId }}</button>
-            <span class="mx-1.5 text-slate-600">/</span>
-            <span class="font-mono text-slate-300">{{ focusId }}</span>
-            <span class="ml-2 text-xs text-slate-600">(esc to zoom out)</span>
+            <template v-if="isolated">
+              <span class="mx-1.5 text-slate-600">/</span>
+              <span class="text-slate-300">{{ isolated }}</span>
+              <span class="ml-1 text-xs text-slate-600">folder</span>
+            </template>
+            <template v-if="focusId">
+              <span class="mx-1.5 text-slate-600">/</span>
+              <button
+                class="font-mono"
+                :class="scope ? 'text-coral hover:underline' : 'text-slate-300'"
+                :disabled="!scope"
+                @click="setScope(null)"
+              >{{ focusId }}</button>
+            </template>
+            <template v-if="scope">
+              <span class="mx-1.5 text-slate-600">/</span>
+              <span class="mr-1.5 rounded border border-edge px-1 text-[10px] uppercase tracking-wide text-slate-400">{{ scope.kind }}</span>
+              <span class="font-mono text-slate-300">{{ scope.label }}</span>
+            </template>
+            <span class="ml-2 text-xs text-slate-600">(esc to step out)</span>
           </template>
           <template v-else>Structure, dependencies, and data flow - per stack</template>
         </p>
@@ -391,7 +540,69 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <div v-else-if="arch" class="flex min-h-0 flex-1 flex-col gap-4">
       <!-- shared header: stats + drift + focus controls -->
       <div class="flex shrink-0 flex-wrap items-center gap-2">
-        <template v-if="!focusId">
+        <!-- narrowed to a namespace / file / class / method / endpoint -->
+        <template v-if="scopeGraph">
+          <span class="text-xs text-slate-500">downstream:</span>
+          <button
+            v-for="depth in SCOPE_DEPTHS"
+            :key="depth.value"
+            class="rounded-full border px-3 py-1 text-xs transition-colors"
+            :class="scopeDepth === depth.value ? 'border-coral/60 text-coral' : 'border-edge text-slate-400 hover:text-slate-200'"
+            :title="depth.value === 99 ? `everything reachable (up to ${SCOPE_LIMIT})` : `${depth.value} hop${depth.value === 1 ? '' : 's'} out`"
+            @click="scopeDepth = depth.value"
+          >
+            {{ depth.label }}
+          </button>
+          <label v-if="scope.kind !== 'endpoint'" class="ml-1 flex cursor-pointer items-center gap-1.5 text-xs text-slate-400">
+            <input v-model="scopeCallers" type="checkbox" class="accent-[#ff6b5e]" />
+            callers
+          </label>
+          <span class="text-xs text-slate-500">
+            {{ scopeGraph.seeds }} in scope · {{ visibleNodes.length }} {{ scopeNoun }} · {{ visibleEdges.length }} links
+          </span>
+          <span v-if="scopeGraph.truncated" class="text-xs text-amber-400" :title="`${scopeGraph.truncated} more not drawn`">
+            capped at {{ SCOPE_LIMIT }}
+          </span>
+          <span v-if="scopeGraph.hiddenCallers" class="text-xs text-slate-500">
+            +{{ scopeGraph.hiddenCallers }} callers not drawn
+          </span>
+          <span v-if="!visibleNodes.length" class="text-xs text-amber-400">nothing indexed for this scope</span>
+          <button
+            class="rounded-full border border-edge px-3 py-1 text-xs text-slate-400 transition-colors hover:border-coral/40 hover:text-coral"
+            @click="setScope(null)"
+          >
+            &times; {{ focusId ? `back to ${focusId}` : 'back to the map' }}
+          </button>
+        </template>
+
+        <!-- one solution folder and what it links to -->
+        <template v-else-if="isolated">
+          <span class="text-xs text-slate-500">linked libraries:</span>
+          <button
+            v-for="depth in ISOLATE_DEPTHS"
+            :key="depth.value"
+            class="rounded-full border px-3 py-1 text-xs transition-colors"
+            :class="isolateDepth === depth.value ? 'border-coral/60 text-coral' : 'border-edge text-slate-400 hover:text-slate-200'"
+            @click="isolateDepth = depth.value"
+          >
+            {{ depth.label }}
+          </button>
+          <label class="ml-1 flex cursor-pointer items-center gap-1.5 text-xs text-slate-400">
+            <input v-model="isolateUsers" type="checkbox" class="accent-[#ff6b5e]" />
+            used by
+          </label>
+          <span class="text-xs text-slate-500">
+            {{ isolationCounts.member }} in {{ isolated }} · {{ isolationCounts.linked }} linked<template v-if="isolateUsers"> · {{ isolationCounts.user }} using it</template>
+          </span>
+          <button
+            class="rounded-full border border-edge px-3 py-1 text-xs text-slate-400 transition-colors hover:border-coral/40 hover:text-coral"
+            @click="isolate(null)"
+          >
+            &times; show all
+          </button>
+        </template>
+
+        <template v-else-if="!focusId">
           <span
             v-for="(value, label) in arch.stats"
             :key="label"
@@ -399,6 +610,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           >
             {{ value }} <span class="text-slate-500">{{ label.replace('_', ' ') }}</span>
           </span>
+          <span v-if="show3d" class="text-xs text-slate-600">click a folder in the map's legend to isolate it</span>
         </template>
         <template v-else>
           <span class="text-xs text-slate-500">neighborhood depth:</span>
@@ -453,24 +665,31 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           v-if="show3d"
           :nodes="visibleNodes"
           :edges="visibleEdges"
-          :mode="focusId ? 'focus' : 'overview'"
-          :focus-id="focusId"
-          :legend="LEGENDS[stack] || null"
+          :mode="graphMode"
+          :focus-id="graphFocusId"
+          :legend="graphLegend"
+          :legend-action="scopeGraph ? 'highlight' : 'isolate'"
+          :isolated="isolated"
+          :caption="caption"
+          :palette="palette"
+          :frame-focus="!scopeGraph"
           height-class="h-full"
           @select="selectNode($event)"
-          @focus="setFocus($event)"
+          @focus="onGraphFocus($event)"
+          @isolate="isolate($event)"
           @unsupported="webglFailed = true"
         />
         <ArchGraph
           v-else
           :nodes="visibleNodes"
           :edges="visibleEdges"
-          :mode="focusId ? 'focus' : 'overview'"
-          :focus-id="focusId"
-          :legend="LEGENDS[stack] || null"
+          :mode="graphMode"
+          :focus-id="graphFocusId"
+          :legend="graphLegend"
+          :palette="palette"
           height-class="h-full"
           @select="selectNode($event)"
-          @focus="setFocus($event)"
+          @focus="onGraphFocus($event)"
         />
         <aside
           v-if="selectedNode"
@@ -488,6 +707,68 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           />
           <div class="min-w-0 flex-1 overflow-auto p-4">
           <h3 class="break-all font-mono text-sm font-semibold text-white">{{ selectedNode.label }}</h3>
+
+          <!-- a class / method / endpoint of a narrowed map -->
+          <template v-if="scopedNode">
+            <p class="mt-1 break-all text-xs text-slate-500">
+              <span class="rounded border border-edge px-1 text-[10px] uppercase tracking-wide text-slate-400">{{ selectedNode.kind === 'method' ? `${selectedNode.typeKind} method` : selectedNode.kind }}</span>
+              <template v-if="selectedNode.project"> &middot; {{ selectedNode.project }}</template>
+              <template v-if="selectedNode.role === 'uses'"> &middot; reached from the scope</template>
+              <template v-else-if="selectedNode.role === 'flow'"> &middot; on the path from the scope</template>
+              <template v-else-if="selectedNode.role === 'usedBy'"> &middot; calls into the scope</template>
+            </p>
+            <p v-if="selectedNode.namespace" class="mt-1 break-all font-mono text-[11px] text-slate-400">{{ selectedNode.namespace }}</p>
+            <p v-if="selectedNode.file" class="mt-0.5 break-all font-mono text-[11px] text-slate-500">
+              {{ selectedNode.file }}<template v-if="selectedNode.line">:{{ selectedNode.line }}</template>
+            </p>
+            <div class="mt-2 flex gap-2">
+              <button
+                v-if="selectedNode.kind !== 'endpoint' && selectedNode.id !== graphFocusId"
+                class="flex-1 rounded-md border border-coral/40 px-2 py-1 text-xs text-coral hover:bg-coral/10"
+                @click="onGraphFocus(selectedNode.id)"
+              >
+                Narrow to this &rarr;
+              </button>
+              <button
+                v-if="selectedNode.kind === 'endpoint'"
+                class="flex-1 rounded-md border border-coral/40 px-2 py-1 text-xs text-coral hover:bg-coral/10"
+                @click="inspected = selectedNode.endpoint"
+              >
+                Inspect call flow &rarr;
+              </button>
+            </div>
+            <div v-if="selectedMethods.length" class="mt-3">
+              <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Methods ({{ selectedMethods.length }})</p>
+              <div class="mt-1 flex flex-wrap gap-1">
+                <button
+                  v-for="m in selectedMethods"
+                  :key="m.name"
+                  class="rounded border border-edge bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-slate-300 hover:border-coral/40 hover:text-coral"
+                  :title="`line ${m.line} - narrow the map to this method`"
+                  @click="scopeMethod(selectedNode.typeName, m.name)"
+                >{{ m.name }}()</button>
+              </div>
+            </div>
+            <div v-for="[title, refs] in [['Reaches', nodeRefs.uses], ['Reached from', nodeRefs.usedBy]]" :key="title">
+              <div v-if="refs.length" class="mt-3">
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{{ title }} ({{ refs.length }})</p>
+                <div class="mt-1 flex flex-col gap-0.5">
+                  <button
+                    v-for="r in refs"
+                    :key="r.id"
+                    class="flex items-center gap-2 rounded px-1 py-0.5 text-left font-mono text-[11px] text-slate-300 hover:bg-panel-2 hover:text-coral"
+                    title="narrow the map to this"
+                    @click="onGraphFocus(r.id)"
+                  >
+                    <span class="min-w-0 truncate">{{ r.label }}</span>
+                    <span class="ml-auto shrink-0 text-[10px] text-slate-500">{{ r.kind }}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
           <p class="mt-1 break-all text-xs text-slate-500">
             <template v-if="stack === 'dotnet'">
               {{ selectedNode.framework || 'no framework' }} &middot; {{ selectedNode.file_count }} files
@@ -527,20 +808,20 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Uses ({{ nodeRefs.uses.length }})</p>
             <div class="mt-1 flex flex-wrap gap-1">
               <span
-                v-for="ref in nodeRefs.uses"
-                :key="ref"
+                v-for="r in nodeRefs.uses"
+                :key="r.id"
                 class="rounded border border-edge bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
-              >{{ ref }}</span>
+              >{{ r.label }}</span>
             </div>
           </div>
           <div v-if="nodeRefs.usedBy.length" class="mt-3">
             <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Used by ({{ nodeRefs.usedBy.length }})</p>
             <div class="mt-1 flex flex-wrap gap-1">
               <span
-                v-for="ref in nodeRefs.usedBy"
-                :key="ref"
+                v-for="r in nodeRefs.usedBy"
+                :key="r.id"
                 class="rounded border border-edge bg-panel-2 px-1.5 py-0.5 font-mono text-[10px] text-slate-400"
-              >{{ ref }}</span>
+              >{{ r.label }}</span>
             </div>
           </div>
           <div v-if="selectedNode.packages?.length" class="mt-3">
@@ -553,6 +834,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               </li>
             </ul>
           </div>
+          </template>
           </div>
         </aside>
         </div>
@@ -576,7 +858,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             <DataFlowTable
               class="min-h-0 flex-1"
               :endpoints="focusEndpoints"
+              :active-key="activeEndpoint"
               height-class="min-h-0 flex-1"
+              @trace="traceEndpoint($event)"
               @inspect="inspected = $event"
             />
           </section>
@@ -592,7 +876,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         <DataFlowTable
           class="min-h-0 flex-1"
           :endpoints="arch.endpoints"
+          :active-key="activeEndpoint"
           height-class="min-h-0 flex-1"
+          @trace="traceEndpoint($event)"
           @inspect="inspected = $event"
         />
       </section>

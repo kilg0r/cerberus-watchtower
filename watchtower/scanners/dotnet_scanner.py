@@ -34,6 +34,9 @@ _ROUTE_ATTR_RE = re.compile(r'\[Route\("([^"]*)"\)\]')
 _HTTP_ATTR_RE = re.compile(r'\[Http(Get|Post|Put|Delete|Patch)(?:\("([^"]*)"\))?\]')
 _CONTROLLER_CLASS_RE = re.compile(r"\bclass\s+(\w+Controller)\b")
 _TYPE_DECL_RE = re.compile(r"\b(class|interface|record)\s+(\w+)")
+# file-scoped (`namespace A.B;`) or block (`namespace A.B {`); a type belongs
+# to the last one declared before it
+_NAMESPACE_RE = re.compile(r"^[ \t]*namespace\s+([\w.]+)\s*[;{]", re.M)
 _CTOR_MODIFIER_RE = re.compile(r"^(?:this|in|out|ref|params)\s+")
 _ATTR_RE = re.compile(r"\[[^\]]*\]")
 _FIELD_DECL_RE = re.compile(r"([\w?]+(?:<[^;={]*?>)?\??)\s+(_\w+)\s*(?:;|=>|=)")
@@ -185,6 +188,7 @@ def _extract_types(
     for cs in _cs_files(project_dir):
         content = _read(cs)
         decls = list(_TYPE_DECL_RE.finditer(content))
+        namespaces = [(m.start(), m.group(1)) for m in _NAMESPACE_RE.finditer(content)]
         for index, decl in enumerate(decls):
             kind, name = decl.group(1), decl.group(2)
             body_end = decls[index + 1].start() if index + 1 < len(decls) else len(content)
@@ -195,6 +199,8 @@ def _extract_types(
                 "kind": kind,
                 "project": project_name,
                 "file": str(cs.relative_to(project_dir.parent)),
+                "namespace": next((ns for at, ns in reversed(namespaces) if at < decl.start()), None),
+                "line": content.count("\n", 0, decl.start()) + 1,
             }
 
             brace = content.find("{", decl.end())

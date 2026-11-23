@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch } from '../composables/useApi'
+import { useEdgeResize } from '../composables/useEdgeResize'
 import BundleBar from '../components/BundleBar.vue'
 import BundleReview from '../components/BundleReview.vue'
 import CommitRow from '../components/CommitRow.vue'
@@ -11,6 +12,13 @@ import SplitPane from '../components/SplitPane.vue'
 
 const ALL = '__all__'
 const PAGE = 50
+
+// the commit message box: drag its bottom edge to trade message for code, or
+// fold it to the subject line (both remembered)
+const message = useEdgeResize('history-message', { initial: 220, min: 40, max: 1200, edge: 'bottom' })
+const MESSAGE_KEY = 'watchtower:history:message-folded'
+const messageFolded = ref(localStorage.getItem(MESSAGE_KEY) === '1')
+watch(messageFolded, (v) => localStorage.setItem(MESSAGE_KEY, v ? '1' : '0'))
 
 const route = useRoute()
 const router = useRouter()
@@ -282,8 +290,18 @@ onMounted(async () => {
             <p v-if="detailLoading" class="text-xs text-slate-500">Loading commit&hellip;</p>
             <p v-else-if="detail?.error" class="text-xs text-red-400">{{ detail.error }}</p>
             <div v-else-if="detail" class="flex min-h-0 flex-1 flex-col">
-              <div class="shrink-0 rounded-lg border border-edge bg-panel p-4">
+              <div class="shrink-0 rounded-lg border border-edge bg-panel px-4 pt-3" :class="detail.body && !messageFolded ? 'pb-0' : 'pb-3'">
                 <div class="flex items-center gap-2">
+                  <button
+                    v-if="detail.body"
+                    class="-ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-panel-2 hover:text-slate-200"
+                    :title="messageFolded ? 'show the commit message' : 'fold the message to its subject line'"
+                    @click="messageFolded = !messageFolded"
+                  >
+                    <svg class="h-3 w-3 transition-transform" :class="{ 'rotate-90': !messageFolded }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
                   <span class="font-mono text-xs text-coral">{{ detail.short }}</span>
                   <h2 class="min-w-0 flex-1 truncate text-sm font-semibold text-white" :title="detail.subject">
                     {{ detail.subject }}
@@ -292,10 +310,35 @@ onMounted(async () => {
                 </div>
                 <p class="mt-1 text-[11px] text-slate-500">
                   {{ detail.author }} &middot; {{ new Date(detail.date).toLocaleString() }}
+                  <button
+                    v-if="detail.body && messageFolded"
+                    class="ml-2 text-slate-500 hover:text-coral"
+                    @click="messageFolded = false"
+                  >
+                    &middot; message ({{ detail.body.split('\n').length }} lines)
+                  </button>
                 </p>
-                <p v-if="detail.body" class="mt-2 whitespace-pre-line border-t border-edge/60 pt-2 text-xs leading-relaxed text-slate-400">
-                  {{ detail.body }}
-                </p>
+                <template v-if="detail.body && !messageFolded">
+                  <p
+                    class="mt-2 overflow-auto whitespace-pre-line border-t border-edge/60 pr-1 pt-2 text-xs leading-relaxed text-slate-400"
+                    :style="{ maxHeight: `${message.size.value}px` }"
+                  >{{ detail.body }}</p>
+                  <!-- drag to resize the message; double-click resets -->
+                  <div
+                    class="group -mx-4 flex h-3 cursor-row-resize items-center justify-center rounded-b-lg transition-colors hover:bg-coral/10"
+                    :class="message.dragging.value ? 'bg-coral/15' : ''"
+                    title="drag to resize the message - double-click to reset"
+                    @pointerdown="message.onPointerDown"
+                    @pointermove="message.onPointerMove"
+                    @pointerup="message.onPointerUp"
+                    @dblclick="message.reset"
+                  >
+                    <span
+                      class="h-0.5 w-10 rounded-full transition-colors"
+                      :class="message.dragging.value ? 'bg-coral' : 'bg-slate-600 group-hover:bg-coral/70'"
+                    />
+                  </div>
+                </template>
               </div>
               <div class="mt-3 min-h-0 flex-1 overflow-auto pr-1">
                 <GitFileRow v-for="f in detail.files" :key="f.path" :file="f" :diff-url="commitDiffUrl(f.path)" />
