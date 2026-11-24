@@ -494,8 +494,9 @@ const relationStyle = (id) => {
       </div>
 
       <!-- legend: click a group to isolate it. UI blocks stop pointerdown: OrbitControls
-           captures the pointer on the stage, which would retarget the click away -->
-      <div class="absolute bottom-3 left-3 flex max-w-[60%] flex-wrap gap-1.5" data-arch-ui @pointerdown.stop>
+           captures the pointer on the stage, which would retarget the click away.
+           On a phone it is one row you swipe sideways (11 folders took a third of the map) -->
+      <div class="absolute bottom-3 left-3 flex max-w-[60%] flex-wrap gap-1.5 max-md:right-3 max-md:max-w-none max-md:touch-pan-x max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-1 max-md:[&>*]:shrink-0" data-arch-ui @pointerdown.stop>
         <button
           v-for="item in legendItems"
           :key="item.label"

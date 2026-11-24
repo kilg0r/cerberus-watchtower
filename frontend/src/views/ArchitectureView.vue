@@ -157,9 +157,13 @@ const scopeGraph = computed(() =>
     ? buildScopeGraph(arch.value, ctx.value, scope.value, { depth: scopeDepth.value, callers: scopeCallers.value })
     : null
 )
+// phone layout: which split pane shows - the map, or the lists under it
+const archPane = ref('first')
+
 function setScope(next) {
   // picking the active scope again steps back out of it
   scope.value = next && scopeId(next) === scopeId(scope.value) ? null : next
+  if (scope.value) archPane.value = 'first'
   isolated.value = null
   selectedNode.value = null
   narrative.value = null
@@ -406,7 +410,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-4 flex shrink-0 flex-wrap items-end justify-between gap-3">
+    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-3 md:mb-4">
       <div>
         <h1 class="text-xl font-semibold text-white">Architecture</h1>
         <p class="mt-1 text-sm text-slate-500">
@@ -431,12 +435,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
               <span class="mr-1.5 rounded border border-edge px-1 text-[10px] uppercase tracking-wide text-slate-400">{{ scope.kind }}</span>
               <span class="font-mono text-slate-300">{{ scope.label }}</span>
             </template>
-            <span class="ml-2 text-xs text-slate-600">(esc to step out)</span>
+            <span class="ml-2 text-xs text-slate-600 max-md:hidden">(esc to step out)</span>
           </template>
-          <template v-else>Structure, dependencies, and data flow - per stack</template>
+          <span v-else class="max-md:hidden">Structure, dependencies, and data flow - per stack</span>
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2 max-md:w-full">
         <div
           v-if="!isOverview"
           class="flex overflow-hidden rounded-md border border-edge text-xs"
@@ -460,7 +464,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         </div>
         <select
           v-model="selectedId"
-          class="rounded-md border border-edge bg-panel-2 px-3 py-1.5 text-xs text-slate-200 focus:border-coral/60 focus:outline-none"
+          class="rounded-md border border-edge bg-panel-2 px-3 py-1.5 text-xs text-slate-200 focus:border-coral/60 focus:outline-none max-md:min-w-0 max-md:flex-1"
           @change="load()"
         >
           <option :value="ALL">All repos - portfolio overview</option>
@@ -471,7 +475,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           </optgroup>
         </select>
         <button
-          class="rounded-md border border-edge px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-coral/40 hover:text-coral disabled:opacity-50"
+          class="rounded-md border border-edge px-3 py-1.5 text-xs text-slate-400 transition-colors hover:border-coral/40 hover:text-coral disabled:opacity-50 max-md:hidden"
           :disabled="refreshingList"
           title="Re-discover repos under the configured roots"
           @click="refreshRepoList"
@@ -503,7 +507,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <div v-else-if="isOverview && overview" class="min-h-0 flex-1 space-y-8 overflow-auto pr-1">
       <section v-for="[group, entries] in groupedOverview" :key="group">
         <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">{{ group }}</h2>
-        <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(340px,1fr))]">
+        <div class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr))]">
           <button
             v-for="entry in entries"
             :key="entry.repo_id"
@@ -537,9 +541,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     </div>
 
     <!-- ============ single repo ============ -->
-    <div v-else-if="arch" class="flex min-h-0 flex-1 flex-col gap-4">
-      <!-- shared header: stats + drift + focus controls -->
-      <div class="flex shrink-0 flex-wrap items-center gap-2">
+    <div v-else-if="arch" class="flex min-h-0 flex-1 flex-col gap-2 md:gap-4">
+      <!-- shared header: stats + drift + focus controls (one swipeable line on a phone) -->
+      <div class="flex shrink-0 flex-wrap items-center gap-2 max-md:flex-nowrap max-md:overflow-x-auto max-md:pb-1 max-md:[&>*]:shrink-0 max-md:[&>*]:whitespace-nowrap">
         <!-- narrowed to a namespace / file / class / method / endpoint -->
         <template v-if="scopeGraph">
           <span class="text-xs text-slate-500">downstream:</span>
@@ -610,7 +614,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           >
             {{ value }} <span class="text-slate-500">{{ label.replace('_', ' ') }}</span>
           </span>
-          <span v-if="show3d" class="text-xs text-slate-600">click a folder in the map's legend to isolate it</span>
+          <span v-if="show3d" class="text-xs text-slate-600 max-md:hidden">click a folder in the map's legend to isolate it</span>
         </template>
         <template v-else>
           <span class="text-xs text-slate-500">neighborhood depth:</span>
@@ -654,8 +658,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       <!-- graph over stack panels - drag the divider to rebalance -->
       <SplitPane
         v-if="hasGraph"
+        v-model:pane="archPane"
         direction="vertical"
         storage-key="arch-graph"
+        :labels="['Map', 'Details']"
         :initial="0.6"
         class="min-h-0 flex-1"
       >
@@ -693,11 +699,11 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         />
         <aside
           v-if="selectedNode"
-          class="absolute right-3 top-3 z-10 flex max-h-[calc(100%-24px)] max-w-[calc(100%-24px)] rounded-lg border border-edge bg-panel/95 backdrop-blur"
+          class="absolute right-3 top-3 z-10 flex max-h-[calc(100%-24px)] max-w-[calc(100%-24px)] rounded-lg border border-edge bg-panel/95 backdrop-blur max-md:inset-x-2 max-md:top-auto max-md:bottom-2 max-md:max-h-[60%] max-md:max-w-none max-md:w-auto!"
           :style="{ width: aside.size.value + 'px' }"
         >
           <div
-            class="w-1.5 shrink-0 cursor-col-resize rounded-l-lg transition-colors hover:bg-coral/40"
+            class="w-1.5 shrink-0 cursor-col-resize rounded-l-lg transition-colors hover:bg-coral/40 max-md:hidden"
             :class="aside.dragging.value ? 'bg-coral/60' : ''"
             title="drag to resize - double-click to reset"
             @pointerdown="aside.onPointerDown"
@@ -705,7 +711,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
             @pointerup="aside.onPointerUp"
             @dblclick="aside.reset"
           />
-          <div class="min-w-0 flex-1 overflow-auto p-4">
+          <div class="relative min-w-0 flex-1 overflow-auto p-4">
+          <button
+            class="absolute right-2 top-2 rounded p-1 text-slate-500 hover:text-slate-200 md:hidden"
+            aria-label="Close"
+            @click="selectedNode = null"
+          >
+            &times;
+          </button>
           <h3 class="break-all font-mono text-sm font-semibold text-white">{{ selectedNode.label }}</h3>
 
           <!-- a class / method / endpoint of a narrowed map -->
@@ -847,6 +860,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         v-if="stack === 'dotnet' && focusId"
         direction="horizontal"
         storage-key="arch-flows-methods"
+        :labels="['Data flows', 'Methods']"
         :initial="0.5"
         class="min-h-0 flex-1"
       >

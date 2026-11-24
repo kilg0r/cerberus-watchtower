@@ -73,10 +73,10 @@ const eventDetail = (event) => (isArtifactEvent(event) ? event.artifact_title ||
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-6 flex shrink-0 items-end justify-between">
+    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-x-4 gap-y-2 md:mb-6">
       <div>
         <h1 class="text-xl font-semibold text-white">Activity</h1>
-        <p class="mt-1 text-sm text-slate-500">
+        <p class="mt-1 text-sm text-slate-500 max-md:hidden">
           Agent sessions and live tool activity
           <span v-if="indexing" class="ml-2 text-amber-400/80">- indexing transcripts…</span>
         </p>
@@ -105,10 +105,10 @@ const eventDetail = (event) => (isArtifactEvent(event) ? event.artifact_title ||
       Backend not running on :8765
     </div>
 
-    <SplitPane direction="horizontal" storage-key="activity" :initial="0.7" class="min-h-0 flex-1">
+    <SplitPane direction="horizontal" storage-key="activity" :initial="0.7" :labels="['Sessions', 'Live feed']" class="min-h-0 flex-1">
       <template #first>
       <!-- sessions -->
-      <section class="flex h-full min-h-0 flex-col pr-3">
+      <section class="flex h-full min-h-0 flex-col md:pr-3">
         <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
           Recent sessions
         </h2>
@@ -118,7 +118,7 @@ const eventDetail = (event) => (isArtifactEvent(event) ? event.artifact_title ||
         <p v-else-if="!sessions.length" class="rounded-lg border border-dashed border-edge bg-panel/40 px-6 py-10 text-center text-sm text-slate-500">
           {{ indexing ? 'Indexing session transcripts…' : 'No sessions in the last 3 days' }}
         </p>
-        <div v-else class="grid min-h-0 flex-1 content-start items-start gap-3 overflow-auto pr-1 [grid-template-columns:repeat(auto-fill,minmax(440px,1fr))]">
+        <div v-else class="grid min-h-0 flex-1 content-start items-start gap-3 overflow-auto pr-1 [grid-template-columns:repeat(auto-fill,minmax(min(440px,100%),1fr))]">
           <SessionCard
             v-for="session in sessions"
             :key="session.session_id"
@@ -131,7 +131,7 @@ const eventDetail = (event) => (isArtifactEvent(event) ? event.artifact_title ||
 
       <template #second>
       <!-- live feed -->
-      <section class="flex h-full min-h-0 flex-col pl-3">
+      <section class="flex h-full min-h-0 flex-col md:pl-3">
         <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
           Live feed
         </h2>

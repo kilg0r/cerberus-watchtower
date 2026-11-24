@@ -38,6 +38,8 @@ const bundleMode = ref('range')
 
 // right pane: a single commit's detail, or a bundle review
 const rightMode = ref(null) // 'commit' | 'bundle' | null
+// phone layout: which split pane shows (opening a commit or bundle shows it)
+const pane = ref('first')
 const openSha = ref(null)
 const detail = ref(null)
 const detailRepo = ref(null)
@@ -106,6 +108,7 @@ async function loadMore() {
 function onRepoChange() {
   selected.value = []
   rightMode.value = null
+  pane.value = 'first'
   openSha.value = null
   detail.value = null
   load()
@@ -130,6 +133,7 @@ function reviewBundle() {
   if (!selected.value.length) return
   bundleRepo.value = selectedId.value
   rightMode.value = 'bundle'
+  pane.value = 'second'
   openSha.value = null
 }
 
@@ -149,6 +153,7 @@ const bundleSpec = computed(() => {
 // ---- single commit detail ----
 async function open(commit) {
   rightMode.value = 'commit'
+  pane.value = 'second'
   openSha.value = commit.sha
   detailRepo.value = repoOf(commit)
   detail.value = null
@@ -202,10 +207,10 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-4 flex shrink-0 flex-wrap items-end justify-between gap-3">
+    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-3 md:mb-4">
       <div>
         <h1 class="text-xl font-semibold text-white">History</h1>
-        <p class="mt-1 text-sm text-slate-500">
+        <p class="mt-1 text-sm text-slate-500 max-md:hidden">
           Commit history, combined diffs, and architectural change across a bundle
         </p>
       </div>
@@ -225,10 +230,10 @@ onMounted(async () => {
       {{ error }}
     </p>
 
-    <SplitPane v-else direction="horizontal" storage-key="history" :initial="0.42" class="min-h-0 flex-1">
+    <SplitPane v-else v-model:pane="pane" direction="horizontal" storage-key="history" :initial="0.42" :labels="['Commits', 'Detail']" class="min-h-0 flex-1">
       <!-- ============ commit list ============ -->
       <template #first>
-        <section class="flex h-full min-h-0 flex-col pr-3">
+        <section class="flex h-full min-h-0 flex-col md:pr-3">
           <div v-if="loading" class="space-y-2">
             <div v-for="i in 6" :key="i" class="h-12 animate-pulse rounded-md border border-edge bg-panel/50" />
           </div>
@@ -274,7 +279,7 @@ onMounted(async () => {
 
       <!-- ============ detail / bundle ============ -->
       <template #second>
-        <section class="flex h-full min-h-0 flex-col pl-3">
+        <section class="flex h-full min-h-0 flex-col md:pl-3">
           <!-- bundle review -->
           <BundleReview
             v-if="rightMode === 'bundle' && bundleSpec"

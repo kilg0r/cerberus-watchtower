@@ -146,10 +146,10 @@ function popOut() {
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-4 flex shrink-0 flex-wrap items-end justify-between gap-3">
+    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-3 md:mb-4">
       <div>
         <h1 class="text-xl font-semibold text-white">Processes</h1>
-        <p class="mt-1 text-sm text-slate-500">
+        <p class="mt-1 text-sm text-slate-500 max-md:hidden">
           What every running Claude session is executing - calls, processes, agents, background tasks
           <span v-if="data?.indexing" class="ml-2 text-amber-400/80">- indexing transcripts…</span>
         </p>
@@ -203,13 +203,13 @@ function popOut() {
     </div>
 
     <div class="min-h-0 flex-1 overflow-auto pr-1">
-      <div v-if="data === null && !error" class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(460px,1fr))]">
+      <div v-if="data === null && !error" class="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(460px,100%),1fr))]">
         <div v-for="i in 4" :key="i" class="h-48 animate-pulse rounded-lg border border-edge bg-panel/50" />
       </div>
 
       <template v-else-if="data">
         <!-- the machine: where RAM goes now, RAM and CPU over the last hour -->
-        <section class="mb-2 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(380px,1fr))]">
+        <section class="mb-2 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr))]">
           <MemoryBreakdown v-if="host && totals" :host="host" :totals="totals" :sessions="sessions" />
           <div class="rounded-lg border border-edge bg-panel px-4 py-3">
             <TrendChart

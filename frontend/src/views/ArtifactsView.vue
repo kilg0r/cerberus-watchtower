@@ -60,8 +60,12 @@ watch(
   { immediate: true }
 )
 
+// phone layout: which split pane shows (picking an artifact opens its preview)
+const pane = ref(route.query.id ? 'second' : 'first')
+
 function select(id) {
   router.replace({ query: { ...route.query, id } })
+  pane.value = 'second'
 }
 
 const projects = computed(() => {
@@ -140,6 +144,10 @@ const browserLabel = computed(() => browserName.value || 'browser')
 
 // the artifact itself as a standalone page when there's a local HTML copy;
 // otherwise (docs, markdown, no copy captured) its claude.ai page
+// "Open in Chrome" launches the browser on the machine running Watchtower, so
+// it only makes sense there - not on a phone reaching it over the LAN
+const onThisMachine = ['127.0.0.1', 'localhost', '[::1]'].includes(window.location.hostname)
+
 function openTarget(item) {
   if (item.kind === 'artifact' && /\.html?$/i.test(item.content_file || '')) return 'page'
   return item.url ? 'claude' : null
@@ -221,15 +229,15 @@ const shortSession = (id) => id.slice(0, 8)
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-6 flex shrink-0 items-end justify-between gap-6">
+    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-x-6 gap-y-2 md:mb-6">
       <div>
         <h1 class="text-xl font-semibold text-white">Artifacts</h1>
-        <p class="mt-1 text-sm text-slate-500">
+        <p class="mt-1 text-sm text-slate-500 max-md:hidden">
           Pages and docs published from agent sessions
           <span v-if="indexing" class="ml-2 text-amber-400/80">- indexing transcripts…</span>
         </p>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-2 max-md:w-full md:gap-3">
         <div class="flex overflow-hidden rounded-md border border-edge text-xs">
           <button
             v-for="option in [['all', 'All'], ['artifact', 'Artifacts'], ['doc', 'Docs']]"
@@ -252,7 +260,7 @@ const shortSession = (id) => id.slice(0, 8)
           v-model="query"
           type="search"
           placeholder="Search titles, descriptions…"
-          class="w-64 rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-coral/60 focus:outline-none"
+          class="rounded-md border border-edge bg-panel px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-coral/60 focus:outline-none max-md:order-last max-md:w-full md:w-64"
         />
         <button
           class="rounded-md border px-2.5 py-1.5 text-xs transition-colors"
@@ -272,7 +280,7 @@ const shortSession = (id) => id.slice(0, 8)
       @submit.prevent="submitLink"
       @keydown.esc="linkOpen = false"
     >
-      <label class="flex min-w-72 flex-1 flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+      <label class="flex min-w-0 flex-1 basis-full flex-col gap-1 text-[10px] md:min-w-72 md:basis-auto uppercase tracking-wide text-slate-500">
         claude.ai link
         <input
           ref="linkInput"
@@ -282,7 +290,7 @@ const shortSession = (id) => id.slice(0, 8)
           class="rounded-md border border-edge bg-navy px-3 py-1.5 font-mono text-xs normal-case tracking-normal text-slate-200 placeholder:text-slate-600 focus:border-coral/60 focus:outline-none"
         />
       </label>
-      <label class="flex w-64 flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+      <label class="flex w-full flex-col gap-1 text-[10px] md:w-64 uppercase tracking-wide text-slate-500">
         Title (optional)
         <input
           v-model="linkForm.title"
@@ -290,7 +298,7 @@ const shortSession = (id) => id.slice(0, 8)
           class="rounded-md border border-edge bg-navy px-3 py-1.5 text-xs normal-case tracking-normal text-slate-200 focus:border-coral/60 focus:outline-none"
         />
       </label>
-      <label class="flex w-56 flex-col gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+      <label class="flex w-full flex-col gap-1 text-[10px] md:w-56 uppercase tracking-wide text-slate-500">
         Project
         <select
           v-model="linkForm.repo_id"
@@ -324,9 +332,9 @@ const shortSession = (id) => id.slice(0, 8)
       Backend not running on :8765
     </div>
 
-    <SplitPane direction="horizontal" storage-key="artifacts" :initial="0.34" class="min-h-0 flex-1">
+    <SplitPane v-model:pane="pane" direction="horizontal" storage-key="artifacts" :initial="0.34" :labels="['List', 'Preview']" class="min-h-0 flex-1">
       <template #first>
-        <section class="flex h-full min-h-0 flex-col pr-3">
+        <section class="flex h-full min-h-0 flex-col md:pr-3">
           <h2 class="mb-3 flex shrink-0 items-baseline justify-between text-xs font-semibold uppercase tracking-widest text-slate-500">
             <span>Published</span>
             <span v-if="items" class="font-mono normal-case tracking-normal text-slate-600">
@@ -373,7 +381,7 @@ const shortSession = (id) => id.slice(0, 8)
                   </span>
                   <span class="ml-auto flex shrink-0 items-center gap-0.5">
                     <button
-                      v-if="openTarget(item)"
+                      v-if="onThisMachine && openTarget(item)"
                       class="rounded p-1 text-slate-500 opacity-0 transition hover:bg-panel-2 hover:text-slate-200 focus-visible:opacity-100 group-hover:opacity-100"
                       :title="openTitle(item)"
                       :aria-label="`Open ${item.title} in ${browserLabel}`"
@@ -419,7 +427,7 @@ const shortSession = (id) => id.slice(0, 8)
       </template>
 
       <template #second>
-        <section class="flex h-full min-h-0 flex-col pl-3">
+        <section class="flex h-full min-h-0 flex-col md:pl-3">
           <div
             v-if="!selectedId"
             class="flex flex-1 items-center justify-center rounded-lg border border-dashed border-edge bg-panel/30 text-sm text-slate-500"
@@ -430,14 +438,14 @@ const shortSession = (id) => id.slice(0, 8)
           <div v-else-if="!detail" class="h-40 animate-pulse rounded-lg border border-edge bg-panel/50" />
 
           <template v-else>
-            <div class="shrink-0 rounded-lg border border-edge bg-panel p-4">
-              <div class="flex items-start gap-3">
+            <div class="shrink-0 rounded-lg border border-edge bg-panel p-3 md:p-4">
+              <div class="flex flex-wrap items-start gap-3">
                 <span v-if="detail.favicon" class="text-xl leading-none">{{ detail.favicon }}</span>
                 <div class="min-w-0 flex-1">
                   <h2 class="truncate text-base font-semibold text-white" :title="detail.title">{{ detail.title }}</h2>
                   <p v-if="detail.description" class="mt-1 text-xs leading-relaxed text-slate-400">{{ detail.description }}</p>
                 </div>
-                <div class="flex shrink-0 items-center gap-2">
+                <div class="flex shrink-0 flex-wrap items-center gap-2 max-md:w-full">
                   <button
                     class="flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs transition-colors"
                     :class="detail.pinned ? 'border-coral/50 text-coral hover:bg-coral/10' : 'border-edge text-slate-300 hover:border-slate-500'"
@@ -449,7 +457,7 @@ const shortSession = (id) => id.slice(0, 8)
                     {{ detail.pinned ? 'Pinned' : 'Pin' }}
                   </button>
                   <button
-                    v-if="openTarget(detail)"
+                    v-if="onThisMachine && openTarget(detail)"
                     class="rounded-md border border-edge px-2.5 py-1.5 text-xs text-slate-300 hover:border-slate-500"
                     :title="openTitle(detail)"
                     @click="openInBrowser(detail)"

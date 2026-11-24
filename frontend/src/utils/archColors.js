@@ -8,8 +8,12 @@ export const FOLDER_COLORS = {
   tests: '#64748b',
 }
 // colors handed out to solution folders beyond the canonical four, assigned
-// in sorted order so a given folder name keeps its color across rescans
-export const EXTRA_FOLDER_PALETTE = ['#f472b6', '#22d3ee', '#a3e635', '#fb923c', '#e879f9', '#2dd4bf']
+// in sorted order so a given folder name keeps its color across rescans.
+// Keep one slot per folder (payTableDotnet has 8 extras): the index wraps, and
+// a wrapped folder silently shares a color. The last two were picked with the
+// dataviz validator against the dark map surface, every other folder color and
+// the uses/used-by highlights (no reds, no light blues).
+export const EXTRA_FOLDER_PALETTE = ['#f472b6', '#22d3ee', '#a3e635', '#fb923c', '#e879f9', '#2dd4bf', '#9333ea', '#b45309']
 export const KIND_COLORS = {
   view: '#38bdf8',
   component: '#a78bfa',

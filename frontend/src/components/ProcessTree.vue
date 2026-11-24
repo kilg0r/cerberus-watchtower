@@ -31,8 +31,8 @@ const busy = computed(() => props.node.cpu >= 1)
         :class="busy ? 'animate-pulse' : ''"
         :style="{ backgroundColor: category.color }"
       />
-      <span class="shrink-0 text-slate-300">{{ node.name }}</span>
-      <span class="shrink-0 text-slate-600">{{ node.pid }}</span>
+      <span class="shrink-0 text-slate-300 max-md:min-w-0 max-md:shrink max-md:truncate">{{ node.name }}</span>
+      <span class="shrink-0 text-slate-600 max-md:hidden">{{ node.pid }}</span>
       <span class="min-w-0 flex-1 truncate text-slate-500">{{ hideCmd ? '' : node.cmd }}</span>
       <span class="w-12 shrink-0 text-right tabular-nums" :class="busy ? 'text-slate-200' : 'text-slate-600'">
         {{ node.cpu.toFixed(1) }}%

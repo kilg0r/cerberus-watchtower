@@ -10,47 +10,55 @@ const navItems = [
   {
     to: '/review',
     label: 'Review Queue',
+    short: 'Review',
     icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z',
   },
   {
     to: '/activity',
     label: 'Activity',
+    short: 'Activity',
     icon: 'M13 10V3L4 14h7v7l9-11h-7z',
   },
   {
     to: '/processes',
     label: 'Processes',
+    short: 'Procs',
     icon: 'M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z',
   },
   {
     to: '/artifacts',
     label: 'Artifacts',
+    short: 'Artifacts',
     icon: 'M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2',
   },
   {
     to: '/architecture',
     label: 'Architecture',
+    short: 'Arch',
     icon: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10',
   },
   {
     to: '/history',
     label: 'History',
+    short: 'History',
     icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
   },
   {
     to: '/ports',
     label: 'Ports',
+    short: 'Ports',
     icon: 'M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0',
   },
 ]
 </script>
 
 <template>
-  <div v-if="popout" class="h-screen overflow-hidden px-5 py-4">
+  <div v-if="popout" class="h-dvh overflow-hidden px-5 py-4">
     <RouterView />
   </div>
-  <div v-else class="flex h-screen overflow-hidden">
-    <aside class="w-[220px] shrink-0 border-r border-edge bg-panel/60 px-4 py-6">
+  <!-- dvh, not vh: iOS Safari's vh includes the area under its toolbar -->
+  <div v-else class="flex h-dvh overflow-hidden">
+    <aside class="hidden w-[220px] shrink-0 border-r border-edge bg-panel/60 px-4 py-6 md:block">
       <div class="mb-8 px-2">
         <span class="text-lg font-semibold tracking-tight text-white">Watchtower</span>
         <p class="mt-0.5 text-xs text-slate-500">Cerberus Labs</p>
@@ -71,10 +79,40 @@ const navItems = [
       </nav>
     </aside>
 
-    <main class="min-w-0 flex-1 overflow-hidden px-8 py-6">
+    <main class="app-main min-w-0 flex-1 overflow-hidden px-3 py-3 md:px-8 md:py-6">
       <div class="h-full">
         <RouterView />
       </div>
     </main>
+
+    <!-- phones: the sidebar becomes a bottom tab bar -->
+    <nav class="tabbar fixed inset-x-0 bottom-0 z-40 flex border-t border-edge bg-panel/95 backdrop-blur md:hidden">
+      <RouterLink
+        v-for="item in navItems"
+        :key="item.to"
+        :to="item.to"
+        class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pt-2 pb-1.5 text-[10px] leading-none text-slate-400"
+        active-class="!text-coral"
+      >
+        <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" :d="item.icon" />
+        </svg>
+        <span class="truncate">{{ item.short }}</span>
+      </RouterLink>
+    </nav>
   </div>
 </template>
+
+<style scoped>
+.tabbar {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+/* below md the tab bar overlays the bottom of the screen: keep views clear of
+   it, and clear of the notch when launched from the home screen */
+@media (max-width: 47.99rem) {
+  .app-main {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+    padding-bottom: calc(3.5rem + env(safe-area-inset-bottom));
+  }
+}
+</style>

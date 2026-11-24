@@ -151,7 +151,7 @@ function jump(row) {
     <div class="rounded-lg border border-edge bg-panel">
       <!-- time axis over the strip column -->
       <div class="session-grid border-b border-edge/70 px-3 py-1 text-[10px] text-slate-500">
-        <span class="col-span-4">Session</span>
+        <span class="col-span-4 max-md:col-span-2">Session</span>
         <div ref="axis" class="relative h-3.5">
           <span
             v-for="tk in ticks"
@@ -161,8 +161,8 @@ function jump(row) {
           >{{ tk.text }}</span>
         </div>
         <span>Memory</span>
-        <span />
-        <span class="text-right">Status</span>
+        <span class="max-md:hidden" />
+        <span class="text-right max-md:hidden">Status</span>
       </div>
 
       <div
@@ -175,8 +175,8 @@ function jump(row) {
       >
         <span class="h-1.5 w-1.5 rounded-full" :class="LED[row.s.state] || LED.idle" />
         <span class="truncate font-medium text-slate-200">{{ row.s.project }}</span>
-        <span class="truncate font-mono text-[10px] text-slate-500" :title="`pid ${row.s.pid}`">{{ row.s.name || row.s.pid }}</span>
-        <span class="truncate text-slate-500" :title="row.s.title || row.s.last_prompt">{{ row.s.title || row.s.last_prompt }}</span>
+        <span class="truncate font-mono text-[10px] text-slate-500 max-md:hidden" :title="`pid ${row.s.pid}`">{{ row.s.name || row.s.pid }}</span>
+        <span class="truncate text-slate-500 max-md:hidden" :title="row.s.title || row.s.last_prompt">{{ row.s.title || row.s.last_prompt }}</span>
 
         <svg
           :width="stripW"
@@ -208,7 +208,7 @@ function jump(row) {
           />
         </svg>
 
-        <div class="flex h-2 min-w-0 gap-[2px]" @pointermove="onMemory($event, row)" @pointerleave="tip = null">
+        <div class="flex h-2 min-w-0 gap-[2px] max-md:hidden" @pointermove="onMemory($event, row)" @pointerleave="tip = null">
           <span
             v-for="seg in memorySegments(row.mem)"
             :key="seg.key"
@@ -219,7 +219,7 @@ function jump(row) {
         </div>
         <span class="text-right font-mono text-[10.5px] tabular-nums text-slate-300">{{ megabytes(row.mem.total) }}</span>
         <span
-          class="truncate text-right text-[11px]"
+          class="truncate text-right text-[11px] max-md:hidden"
           :class="row.s.state === 'waiting' ? 'font-medium text-amber-300' : row.s.state === 'idle' ? 'text-slate-500' : 'text-slate-300'"
         >
           <template v-if="row.s.state === 'waiting'">! </template>{{ statusText(row.s) }}
@@ -247,5 +247,12 @@ function jump(row) {
   display: grid;
   grid-template-columns: 10px minmax(0, 9rem) minmax(0, 7rem) minmax(6rem, 1fr) minmax(16rem, 2.4fr) 8rem 4.5rem 6rem;
   column-gap: 0.75rem;
+}
+/* phones: LED, project, activity strip, memory total - the name, title,
+   memory bar and status columns are hidden (the LED carries the state) */
+@media (max-width: 47.99rem) {
+  .session-grid {
+    grid-template-columns: 10px minmax(0, 1fr) minmax(6rem, 1.5fr) 3.5rem;
+  }
 }
 </style>

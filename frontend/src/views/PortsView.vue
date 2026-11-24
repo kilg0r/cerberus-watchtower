@@ -44,10 +44,10 @@ function uptime(seconds) {
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-6 flex shrink-0 items-end justify-between">
+    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-x-4 gap-y-2 md:mb-6">
       <div>
         <h1 class="text-xl font-semibold text-white">Ports</h1>
-        <p class="mt-1 text-sm text-slate-500">Live socket activity on this machine</p>
+        <p class="mt-1 text-sm text-slate-500 max-md:hidden">Live socket activity on this machine</p>
       </div>
       <p v-if="data" class="text-xs text-slate-500">
         refreshed {{ new Date(data.scanned_at).toLocaleTimeString() }} &middot; 10s poll
@@ -88,10 +88,10 @@ function uptime(seconds) {
         </span>
       </div>
 
-      <SplitPane direction="horizontal" storage-key="ports" :initial="0.68" class="min-h-0 flex-1">
+      <SplitPane direction="horizontal" storage-key="ports" :initial="0.68" :labels="['Listening', 'Connections']" class="min-h-0 flex-1">
         <template #first>
         <!-- listeners -->
-        <section class="flex h-full min-h-0 flex-col pr-3">
+        <section class="flex h-full min-h-0 flex-col md:pr-3">
           <div class="mb-3 flex shrink-0 flex-wrap items-center gap-3">
             <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-500">Listening</h2>
             <input
@@ -159,7 +159,7 @@ function uptime(seconds) {
 
         <template #second>
         <!-- active connections -->
-        <section class="flex h-full min-h-0 flex-col pl-3">
+        <section class="flex h-full min-h-0 flex-col md:pl-3">
           <h2 class="mb-3 shrink-0 text-xs font-semibold uppercase tracking-widest text-slate-500">
             Active connections - by process &amp; remote
           </h2>

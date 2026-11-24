@@ -48,10 +48,10 @@ usePolling(() => (now.value = Date.now()), 10_000)
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-6 flex shrink-0 items-end justify-between">
+    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-x-4 gap-y-2 md:mb-6">
       <div>
         <h1 class="text-xl font-semibold text-white">Review Queue</h1>
-        <p class="mt-1 text-sm text-slate-500">Uncommitted work across registered repos</p>
+        <p class="mt-1 text-sm text-slate-500 max-md:hidden">Uncommitted work across registered repos</p>
       </div>
       <p v-if="scannedAgo" class="text-xs text-slate-500">last scanned {{ scannedAgo }}</p>
     </header>
@@ -72,7 +72,7 @@ usePolling(() => (now.value = Date.now()), 10_000)
     <EmptyState v-else-if="queue !== null && queue.length === 0" />
 
     <!-- side-by-side group columns on wide screens (1080p+) -->
-    <div v-else-if="queue !== null" class="grid min-h-0 flex-1 content-start items-start gap-8 overflow-auto pr-1 [grid-template-columns:repeat(auto-fill,minmax(600px,1fr))]">
+    <div v-else-if="queue !== null" class="grid min-h-0 flex-1 content-start items-start gap-8 overflow-auto pr-1 [grid-template-columns:repeat(auto-fill,minmax(min(600px,100%),1fr))]">
       <section v-for="group in groups" :key="group.key">
         <h2 class="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
           {{ group.label }}

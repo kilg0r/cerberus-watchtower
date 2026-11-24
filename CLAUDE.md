@@ -14,7 +14,31 @@ scripts\Start-Watchtower.ps1                    # idempotent launcher (-Stop | -
 .venv\Scripts\python.exe -m pytest tests/       # run tests (148 passing)
 cd frontend; npm run dev                        # frontend dev mode (proxies /api to :8765)
 cd frontend; npm run build                      # production build -> frontend/dist
+scripts\Enable-LanAccess.ps1 [-Disable]         # (elevated) LAN + Tailscale access on :8766
 ```
+
+**LAN / iPhone access** (Windows): the server stays on 127.0.0.1:8765. A
+`netsh interface portproxy` mapping (0.0.0.0:8766 -> 127.0.0.1:8765, lives in
+the IP Helper service, survives reboots) plus the firewall rule "Cerberus
+Watchtower (TCP 8766, LAN + Tailscale)" (RemoteAddress LocalSubnet +
+100.64.0.0/10, Profile Any - the Wi-Fi is classified Public) expose it at
+`http://192.168.4.22:8766` and `http://m0thership:8766` on the tailnet. There
+is no login, so keep that address scope. Same-origin POSTs from the phone pass
+the JSON-body CSRF guard; "Open in Chrome" opens on the PC, so the Artifacts
+view hides it unless the page was loaded from localhost (`onThisMachine`).
+
+**Phone layout** (below Tailwind `md`, 48rem; `composables/useNarrow.js`): the
+sidebar becomes a bottom tab bar (App.vue, safe-area padding, `h-dvh` because
+iOS Safari's `vh` includes the area under its toolbar). `SplitPane` shows one
+pane at a time with a two-way toggle named by `labels`; `v-model:pane` lets a
+view jump panes (Artifacts/History open the detail on select, Architecture
+returns to the map when a list sets a scope). Panes use `v-show`, so each keeps
+its state. Elsewhere it's `max-md:` utilities: grids use
+`minmax(min(Npx,100%),1fr)`, headers wrap, view subtitles hide (not
+Architecture's - it is the breadcrumb), the 3D legend and the Architecture
+stats row become one swipeable line, the sessions table drops to four columns.
+Check at 390x844 with Playwright (`is_mobile=True`) - and at 1920x1080 for
+regressions, since desktop must stay as it was.
 
 macOS:
 
