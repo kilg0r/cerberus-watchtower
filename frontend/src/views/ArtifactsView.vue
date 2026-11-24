@@ -1,10 +1,13 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch, usePolling } from '../composables/useApi'
-import { ARTIFACT_THEMES, useArtifactTheme } from '../composables/useArtifactTheme'
+import { useArtifactTheme } from '../composables/useArtifactTheme'
+import { useNarrow } from '../composables/useNarrow'
 import { relative, stamp } from '../utils/time'
 import ArtifactPreview from '../components/ArtifactPreview.vue'
+import ArtifactThemeToggle from '../components/ArtifactThemeToggle.vue'
+import ExpandButton from '../components/ExpandButton.vue'
 import PinIcon from '../components/PinIcon.vue'
 import SplitPane from '../components/SplitPane.vue'
 
@@ -62,10 +65,21 @@ watch(
 
 // phone layout: which split pane shows (picking an artifact opens its preview)
 const pane = ref(route.query.id ? 'second' : 'first')
+const narrow = useNarrow()
+// full screen: the preview alone over the whole page, tab bar included. A phone
+// opens an artifact this way; elsewhere it's the Full screen button.
+const fullscreen = ref(narrow.value && !!route.query.id)
 
 function select(id) {
   router.replace({ query: { ...route.query, id } })
   pane.value = 'second'
+  if (narrow.value) fullscreen.value = true
+}
+
+// back to the list (phone), or to the detail card under the preview
+function exitFullscreen(toList = false) {
+  fullscreen.value = false
+  if (toList) pane.value = 'first'
 }
 
 const projects = computed(() => {
@@ -103,6 +117,15 @@ const STATUS_NOTES = {
 const canPreview = computed(
   () => detail.value && detail.value.kind === 'artifact' && detail.value.content_file
 )
+
+// (no local copy, a doc: the detail card shows instead)
+const fullscreenOn = computed(() => fullscreen.value && !!canPreview.value)
+
+function onKeydown(event) {
+  if (event.key === 'Escape' && fullscreenOn.value) exitFullscreen()
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 watch(canPreview, (can) => {
   if (!can) tab.value = 'history'
@@ -509,7 +532,7 @@ const shortSession = (id) => id.slice(0, 8)
               </p>
             </div>
 
-            <div class="mb-2 mt-3 flex shrink-0 gap-4 text-xs">
+            <div class="mb-2 mt-3 flex shrink-0 gap-3 text-xs md:gap-4">
               <button
                 v-if="canPreview"
                 class="border-b-2 pb-1"
@@ -528,32 +551,23 @@ const shortSession = (id) => id.slice(0, 8)
               <span v-if="!canPreview && detail.kind === 'doc'" class="ml-auto text-slate-500">
                 Docs live in the docs service - open them in Claude
               </span>
-              <div
-                v-if="tab === 'preview' && canPreview"
-                class="-mt-1 ml-auto flex overflow-hidden rounded-md border border-edge"
-                role="radiogroup"
-                aria-label="Preview theme"
-              >
-                <button
-                  v-for="(t, i) in ARTIFACT_THEMES"
-                  :key="t.value"
-                  role="radio"
-                  :aria-checked="theme === t.value"
-                  class="px-2.5 py-1 text-[11px] transition-colors"
-                  :class="[
-                    i ? 'border-l border-edge' : '',
-                    theme === t.value ? 'bg-coral/10 text-coral' : 'text-slate-400 hover:text-slate-200',
-                  ]"
-                  :title="t.hint"
-                  @click="theme = t.value"
+              <template v-if="tab === 'preview' && canPreview">
+                <ArtifactThemeToggle class="-mt-1 ml-auto" />
+                <ExpandButton
+                  class="-mt-1 -mr-1 text-[11px]"
+                  title="Full screen (esc to exit)"
+                  aria-label="Full screen"
+                  @click="fullscreen = true"
                 >
-                  {{ t.label }}
-                </button>
-              </div>
+                  <span class="max-md:hidden">Full screen</span>
+                </ExpandButton>
+              </template>
             </div>
 
             <div class="min-h-0 flex-1">
-              <ArtifactPreview v-if="tab === 'preview' && canPreview" :artifact="detail" />
+              <template v-if="tab === 'preview' && canPreview">
+                <ArtifactPreview v-if="!fullscreenOn" :artifact="detail" />
+              </template>
               <ol v-else class="h-full space-y-1 overflow-auto rounded-lg border border-edge bg-panel p-3">
                 <li
                   v-for="(op, i) in detail.ops"
@@ -586,6 +600,42 @@ const shortSession = (id) => id.slice(0, 8)
       </template>
     </SplitPane>
 
+    <!-- full screen: the preview over everything, with a slim bar (safe areas for
+         the notch and home indicator when launched from the home screen) -->
+    <Teleport to="body">
+      <div
+        v-if="fullscreenOn"
+        class="fixed inset-0 z-50 flex flex-col bg-navy pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="detail.title"
+      >
+        <div class="flex shrink-0 items-center gap-2 border-b border-edge bg-panel px-2 pt-[max(0.375rem,env(safe-area-inset-top))] pb-1.5">
+          <button
+            v-if="narrow"
+            class="flex shrink-0 items-center gap-0.5 rounded py-1 pl-0.5 pr-1.5 text-xs text-slate-300 hover:bg-panel-2"
+            aria-label="Back to the list"
+            @click="exitFullscreen(true)"
+          >
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+            List
+          </button>
+          <span v-if="detail.favicon" class="shrink-0 text-base leading-none">{{ detail.favicon }}</span>
+          <h2 class="min-w-0 flex-1 truncate text-sm font-medium text-white" :title="detail.title">{{ detail.title }}</h2>
+          <ArtifactThemeToggle />
+          <ExpandButton
+            expanded
+            title="Exit full screen - details and history (esc)"
+            aria-label="Exit full screen"
+            @click="exitFullscreen()"
+          />
+        </div>
+        <ArtifactPreview class="min-h-0 flex-1 !rounded-none !border-0" :artifact="detail" />
+      </div>
+    </Teleport>
+
     <Transition
       enter-from-class="translate-y-2 opacity-0"
       enter-active-class="transition duration-150"
@@ -595,7 +645,7 @@ const shortSession = (id) => id.slice(0, 8)
       <div
         v-if="flash"
         role="status"
-        class="fixed bottom-5 right-5 z-50 max-w-sm rounded-md border px-3.5 py-2 text-xs shadow-lg"
+        class="fixed bottom-5 right-5 z-50 max-w-sm rounded-md border px-3.5 py-2 text-xs shadow-lg tabnav:bottom-[calc(4rem+env(safe-area-inset-bottom))]"
         :class="flash.error ? 'border-red-500/40 bg-red-950/90 text-red-200' : 'border-edge bg-panel-2 text-slate-200'"
       >
         {{ flash.text }}

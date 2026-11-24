@@ -17,7 +17,7 @@ const drawer = useEdgeResize('flow-inspector', {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-40 flex justify-end">
+  <div class="fixed inset-0 z-50 flex justify-end">
     <div class="absolute inset-0 bg-navy/70 backdrop-blur-sm" @click="$emit('close')" />
     <aside
       class="relative z-50 flex h-full max-w-[calc(100vw-48px)] flex-col border-l border-edge bg-panel shadow-2xl"

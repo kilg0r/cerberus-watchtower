@@ -27,9 +27,13 @@ is no login, so keep that address scope. Same-origin POSTs from the phone pass
 the JSON-body CSRF guard; "Open in Chrome" opens on the PC, so the Artifacts
 view hides it unless the page was loaded from localhost (`onThisMachine`).
 
-**Phone layout** (below Tailwind `md`, 48rem; `composables/useNarrow.js`): the
-sidebar becomes a bottom tab bar (App.vue, safe-area padding, `h-dvh` because
-iOS Safari's `vh` includes the area under its toolbar). `SplitPane` shows one
+**Phone / iPad layout.** The bottom tab bar replaces the sidebar (App.vue,
+safe-area padding, `h-dvh` because iOS Safari's `vh` includes the area under
+its toolbar) on phones and on touch-first tablets at any width: the `tabnav:`
+variant in `style.css` is `(max-width: 47.99rem), (pointer: coarse)`, so an
+iPad keeps two panes side by side but loses the sidebar. Anything fixed to the
+bottom must clear the bar under `tabnav:`. The rest of the phone layout is
+below Tailwind `md`, 48rem (`composables/useNarrow.js`). `SplitPane` shows one
 pane at a time with a two-way toggle named by `labels`; `v-model:pane` lets a
 view jump panes (Artifacts/History open the detail on select, Architecture
 returns to the map when a list sets a scope). Panes use `v-show`, so each keeps
@@ -37,8 +41,19 @@ its state. Elsewhere it's `max-md:` utilities: grids use
 `minmax(min(Npx,100%),1fr)`, headers wrap, view subtitles hide (not
 Architecture's - it is the breadcrumb), the 3D legend and the Architecture
 stats row become one swipeable line, the sessions table drops to four columns.
-Check at 390x844 with Playwright (`is_mobile=True`) - and at 1920x1080 for
-regressions, since desktop must stay as it was.
+On a phone, picking an artifact opens it full screen (Teleported overlay over
+the tab bar; the Full screen button elsewhere, esc exits). Check at 390x844
+with Playwright (`is_mobile=True, has_touch=True` - that is what makes Chromium
+match `pointer: coarse`), at an iPad size (834x1194 and 1194x834, touch), and at
+1920x1080 for regressions, since desktop must stay as it was.
+
+**History's diff reader** (`components/FileReader.vue`, commits and bundles):
+the files in a rail grouped by folder, one file's diff filling the height
+(`DiffView fill` - no 70vh box inside a scrolling list), j / k between files,
+diffs cached with the next one prefetched; under ~640px of its own width the
+rail turns into a picker. The expand button (esc back) sets `SplitPane
+maximized`, hiding the commit list and page header without remounting, and
+folds the commit message just for reading.
 
 macOS:
 

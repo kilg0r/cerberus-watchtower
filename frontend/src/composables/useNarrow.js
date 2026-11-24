@@ -1,7 +1,8 @@
 import { onBeforeUnmount, ref } from 'vue'
 
-// Phone layout switch: true below Tailwind's md breakpoint (48rem), the width
-// at which the sidebar turns into the bottom tab bar (App.vue).
+// Phone layout switch: true below Tailwind's md breakpoint (48rem), where split
+// panes show one at a time. (The bottom tab bar reaches further - touch tablets
+// too, see the `tabnav` variant in style.css.)
 export const NARROW_QUERY = '(max-width: 47.99rem)'
 
 export function useNarrow() {

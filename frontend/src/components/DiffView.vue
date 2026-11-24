@@ -11,6 +11,9 @@ const props = defineProps({
   diff: { type: String, required: true },
   // the file this diff is for - picks the grammar when the diff has no header
   path: { type: String, default: null },
+  // fill the parent's height and scroll inside it (History's file reader),
+  // instead of a box capped at 70vh inside a scrolling list
+  fill: { type: Boolean, default: false },
 })
 
 const MODE_KEY = 'watchtower:diff:mode'
@@ -96,9 +99,15 @@ watch(
   [blocks, painted, mode],
   () => {
     const out = []
-    const showFiles = files.value.length > 1 || blocks.value.some((b) => b.type === 'meta')
+    // filling a reader, a lone commit header and the file name repeat what the
+    // reader already shows above - skip them (several headers, a patch union of
+    // commits, still separate the patches)
+    const metas = blocks.value.filter((b) => b.type === 'meta').length
+    const skipMeta = props.fill && metas === 1
+    const showFiles = files.value.length > 1 || (metas > 0 && !skipMeta)
     for (const block of blocks.value) {
       if (block.type === 'meta') {
+        if (skipMeta) continue
         out.push({ kind: 'meta', key: `m${out.length}`, lines: block.lines, summary: commitSummary(block.lines) })
         continue
       }
@@ -138,9 +147,9 @@ const lineBg = { add: 'diff-add', del: 'diff-del', ctx: '' }
 </script>
 
 <template>
-  <div class="overflow-hidden rounded-md border border-edge bg-[#0b1322]">
+  <div class="overflow-hidden rounded-md border border-edge bg-[#0b1322]" :class="{ 'flex min-h-0 flex-col': fill }">
     <!-- toolbar -->
-    <div class="flex items-center gap-2 border-b border-edge/70 bg-panel-2/60 px-2 py-1 text-[11px]">
+    <div class="flex shrink-0 items-center gap-2 border-b border-edge/70 bg-panel-2/60 px-2 py-1 text-[11px]">
       <div class="flex overflow-hidden rounded border border-edge">
         <button
           v-for="m in ['unified', 'split']"
@@ -166,7 +175,7 @@ const lineBg = { add: 'diff-add', del: 'diff-del', ctx: '' }
       </span>
     </div>
 
-    <div class="diff-body max-h-[70vh] overflow-auto font-mono text-[12px] leading-5">
+    <div class="diff-body overflow-auto font-mono text-[12px] leading-5" :class="fill ? 'min-h-0 flex-1' : 'max-h-[70vh]'">
       <div :class="wrapped ? 'w-full' : 'w-max min-w-full'">
         <template v-for="row in rows" :key="row.key">
           <!-- commit header (git show / patch union): one line, click for all of it -->

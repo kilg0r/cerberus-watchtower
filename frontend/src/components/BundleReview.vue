@@ -6,8 +6,9 @@ import ArchGraph from './ArchGraph.vue'
 import DataFlowTable from './DataFlowTable.vue'
 import DiffStatBadge from './DiffStatBadge.vue'
 import DriftPanel from './DriftPanel.vue'
+import ExpandButton from './ExpandButton.vue'
+import FileReader from './FileReader.vue'
 import FlowInspector from './FlowInspector.vue'
-import GitFileRow from './GitFileRow.vue'
 
 // Combined review of a commit bundle: a Changes tab (combined diff) and an
 // Architecture tab (structural delta + the same call-graph drill-through as the
@@ -19,6 +20,8 @@ const props = defineProps({
   head: { type: String, default: null },
   shas: { type: Array, default: () => [] },
 })
+// the History page folds its commit list away while this is true
+const expanded = defineModel('expanded', { type: Boolean, default: false })
 
 const tab = ref('changes')
 
@@ -243,6 +246,13 @@ function resetFocus() {
           :deletions="bundle.deletions"
         />
       </span>
+      <ExpandButton
+        :class="{ 'ml-auto': !bundle }"
+        :expanded="expanded"
+        :title="expanded ? 'Back to the commit list (esc)' : 'Read full page - hide the commit list'"
+        :aria-pressed="expanded"
+        @click="expanded = !expanded"
+      />
     </div>
 
     <!-- ============ Changes ============ -->
@@ -273,13 +283,12 @@ function resetFocus() {
 
       <p v-if="loadingBundle" class="text-xs text-slate-500">Loading bundle&hellip;</p>
       <p v-else-if="bundleError" class="text-xs text-red-400">{{ bundleError }}</p>
-      <div v-else-if="bundle" class="min-h-0 flex-1 overflow-auto pr-1">
-        <p class="mb-2 text-[11px] text-slate-500">
+      <div v-else-if="bundle" class="flex min-h-0 flex-1 flex-col">
+        <p class="mb-2 shrink-0 text-[11px] text-slate-500">
           {{ bundle.commits.length }} commit{{ bundle.commits.length === 1 ? '' : 's' }} ·
           {{ mode === 'range' ? 'combined tree diff' : 'patch union of selected commits' }}
         </p>
-        <p v-if="!bundle.files.length" class="py-6 text-center text-xs text-slate-500">No file changes</p>
-        <GitFileRow v-for="f in bundle.files" :key="f.path" :file="f" :diff-url="diffUrl(f.path)" />
+        <FileReader class="min-h-0 flex-1" :files="bundle.files" :diff-url="diffUrl" />
       </div>
     </div>
 

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiFetch } from '../composables/useApi'
 import { useEdgeResize } from '../composables/useEdgeResize'
@@ -7,7 +7,8 @@ import BundleBar from '../components/BundleBar.vue'
 import BundleReview from '../components/BundleReview.vue'
 import CommitRow from '../components/CommitRow.vue'
 import DiffStatBadge from '../components/DiffStatBadge.vue'
-import GitFileRow from '../components/GitFileRow.vue'
+import ExpandButton from '../components/ExpandButton.vue'
+import FileReader from '../components/FileReader.vue'
 import SplitPane from '../components/SplitPane.vue'
 
 const ALL = '__all__'
@@ -40,6 +41,18 @@ const bundleMode = ref('range')
 const rightMode = ref(null) // 'commit' | 'bundle' | null
 // phone layout: which split pane shows (opening a commit or bundle shows it)
 const pane = ref('first')
+// reading: the open commit or bundle takes the whole page - the commit list and
+// the page header fold away (the expand button, esc to come back)
+const expanded = ref(false)
+const reading = computed(() => expanded.value && rightMode.value !== null)
+// reading starts with the message folded to its subject line, without touching
+// the remembered fold choice for the normal layout
+const readingFolded = ref(true)
+watch(reading, (on) => on && (readingFolded.value = true))
+const folded = computed({
+  get: () => (reading.value ? readingFolded.value : messageFolded.value),
+  set: (v) => (reading.value ? (readingFolded.value = v) : (messageFolded.value = v)),
+})
 const openSha = ref(null)
 const detail = ref(null)
 const detailRepo = ref(null)
@@ -108,6 +121,7 @@ async function loadMore() {
 function onRepoChange() {
   selected.value = []
   rightMode.value = null
+  expanded.value = false
   pane.value = 'first'
   openSha.value = null
   detail.value = null
@@ -191,6 +205,14 @@ async function applyDeepLink() {
   return true
 }
 
+function onKeydown(event) {
+  if (event.key !== 'Escape' || !reading.value || event.defaultPrevented) return
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName)) return
+  expanded.value = false
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+
 onMounted(async () => {
   try {
     const all = await apiFetch('/api/repos')
@@ -207,7 +229,7 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col">
-    <header class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-3 md:mb-4">
+    <header v-show="!reading" class="mb-3 flex shrink-0 flex-wrap items-end justify-between gap-3 md:mb-4">
       <div>
         <h1 class="text-xl font-semibold text-white">History</h1>
         <p class="mt-1 text-sm text-slate-500 max-md:hidden">
@@ -230,7 +252,16 @@ onMounted(async () => {
       {{ error }}
     </p>
 
-    <SplitPane v-else v-model:pane="pane" direction="horizontal" storage-key="history" :initial="0.42" :labels="['Commits', 'Detail']" class="min-h-0 flex-1">
+    <SplitPane
+      v-else
+      v-model:pane="pane"
+      direction="horizontal"
+      storage-key="history"
+      :initial="0.42"
+      :labels="['Commits', 'Detail']"
+      :maximized="reading"
+      class="min-h-0 flex-1"
+    >
       <!-- ============ commit list ============ -->
       <template #first>
         <section class="flex h-full min-h-0 flex-col md:pr-3">
@@ -279,10 +310,11 @@ onMounted(async () => {
 
       <!-- ============ detail / bundle ============ -->
       <template #second>
-        <section class="flex h-full min-h-0 flex-col md:pl-3">
+        <section class="flex h-full min-h-0 flex-col" :class="{ 'md:pl-3': !reading }">
           <!-- bundle review -->
           <BundleReview
             v-if="rightMode === 'bundle' && bundleSpec"
+            v-model:expanded="expanded"
             :repo-id="bundleRepo"
             :mode="bundleSpec.mode"
             :base="bundleSpec.base"
@@ -295,15 +327,15 @@ onMounted(async () => {
             <p v-if="detailLoading" class="text-xs text-slate-500">Loading commit&hellip;</p>
             <p v-else-if="detail?.error" class="text-xs text-red-400">{{ detail.error }}</p>
             <div v-else-if="detail" class="flex min-h-0 flex-1 flex-col">
-              <div class="shrink-0 rounded-lg border border-edge bg-panel px-4 pt-3" :class="detail.body && !messageFolded ? 'pb-0' : 'pb-3'">
+              <div class="shrink-0 rounded-lg border border-edge bg-panel px-4 pt-3" :class="detail.body && !folded ? 'pb-0' : 'pb-3'">
                 <div class="flex items-center gap-2">
                   <button
                     v-if="detail.body"
                     class="-ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-panel-2 hover:text-slate-200"
-                    :title="messageFolded ? 'show the commit message' : 'fold the message to its subject line'"
-                    @click="messageFolded = !messageFolded"
+                    :title="folded ? 'show the commit message' : 'fold the message to its subject line'"
+                    @click="folded = !folded"
                   >
-                    <svg class="h-3 w-3 transition-transform" :class="{ 'rotate-90': !messageFolded }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <svg class="h-3 w-3 transition-transform" :class="{ 'rotate-90': !folded }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
                     </svg>
                   </button>
@@ -312,18 +344,25 @@ onMounted(async () => {
                     {{ detail.subject }}
                   </h2>
                   <DiffStatBadge :additions="detail.additions" :deletions="detail.deletions" />
+                  <ExpandButton
+                    class="-mr-1"
+                    :expanded="expanded"
+                    :title="expanded ? 'Back to the commit list (esc)' : 'Read full page - hide the commit list'"
+                    :aria-pressed="expanded"
+                    @click="expanded = !expanded"
+                  />
                 </div>
                 <p class="mt-1 text-[11px] text-slate-500">
                   {{ detail.author }} &middot; {{ new Date(detail.date).toLocaleString() }}
                   <button
-                    v-if="detail.body && messageFolded"
+                    v-if="detail.body && folded"
                     class="ml-2 text-slate-500 hover:text-coral"
-                    @click="messageFolded = false"
+                    @click="folded = false"
                   >
                     &middot; message ({{ detail.body.split('\n').length }} lines)
                   </button>
                 </p>
-                <template v-if="detail.body && !messageFolded">
+                <template v-if="detail.body && !folded">
                   <p
                     class="mt-2 overflow-auto whitespace-pre-line border-t border-edge/60 pr-1 pt-2 text-xs leading-relaxed text-slate-400"
                     :style="{ maxHeight: `${message.size.value}px` }"
@@ -345,9 +384,7 @@ onMounted(async () => {
                   </div>
                 </template>
               </div>
-              <div class="mt-3 min-h-0 flex-1 overflow-auto pr-1">
-                <GitFileRow v-for="f in detail.files" :key="f.path" :file="f" :diff-url="commitDiffUrl(f.path)" />
-              </div>
+              <FileReader class="mt-3 min-h-0 flex-1" :files="detail.files" :diff-url="commitDiffUrl" />
             </div>
           </div>
 

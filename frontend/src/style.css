@@ -10,6 +10,15 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
+/* The bottom tab bar (App.vue) replaces the sidebar on phones and on touch-first
+   tablets (iPad) at any width, so views get the screen's full width. `tabnav:`
+   styles that state; `md:` / `max-md:` stay the phone layout (one pane, etc). */
+@custom-variant tabnav {
+  @media (max-width: 47.99rem), (pointer: coarse) {
+    @slot;
+  }
+}
+
 html {
   background-color: var(--color-navy);
 }

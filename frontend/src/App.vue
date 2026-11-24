@@ -58,7 +58,7 @@ const navItems = [
   </div>
   <!-- dvh, not vh: iOS Safari's vh includes the area under its toolbar -->
   <div v-else class="flex h-dvh overflow-hidden">
-    <aside class="hidden w-[220px] shrink-0 border-r border-edge bg-panel/60 px-4 py-6 md:block">
+    <aside class="w-[220px] shrink-0 border-r border-edge bg-panel/60 px-4 py-6 tabnav:hidden">
       <div class="mb-8 px-2">
         <span class="text-lg font-semibold tracking-tight text-white">Watchtower</span>
         <p class="mt-0.5 text-xs text-slate-500">Cerberus Labs</p>
@@ -85,20 +85,22 @@ const navItems = [
       </div>
     </main>
 
-    <!-- phones: the sidebar becomes a bottom tab bar -->
-    <nav class="tabbar fixed inset-x-0 bottom-0 z-40 flex border-t border-edge bg-panel/95 backdrop-blur md:hidden">
-      <RouterLink
-        v-for="item in navItems"
-        :key="item.to"
-        :to="item.to"
-        class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pt-2 pb-1.5 text-[10px] leading-none text-slate-400"
-        active-class="!text-coral"
-      >
-        <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" :d="item.icon" />
-        </svg>
-        <span class="truncate">{{ item.short }}</span>
-      </RouterLink>
+    <!-- phones and iPads: the sidebar becomes a bottom tab bar (centered on wide screens) -->
+    <nav class="tabbar fixed inset-x-0 bottom-0 z-40 hidden border-t border-edge bg-panel/95 backdrop-blur tabnav:block">
+      <div class="mx-auto flex max-w-xl">
+        <RouterLink
+          v-for="item in navItems"
+          :key="item.to"
+          :to="item.to"
+          class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pt-2 pb-1.5 text-[10px] leading-none text-slate-400"
+          active-class="!text-coral"
+        >
+          <svg class="h-5 w-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" :d="item.icon" />
+          </svg>
+          <span class="truncate">{{ item.short }}</span>
+        </RouterLink>
+      </div>
     </nav>
   </div>
 </template>
@@ -107,12 +109,22 @@ const navItems = [
 .tabbar {
   padding-bottom: env(safe-area-inset-bottom);
 }
-/* below md the tab bar overlays the bottom of the screen: keep views clear of
-   it, and clear of the notch when launched from the home screen */
+/* where the tab bar shows (the `tabnav` variant in style.css) it overlays the
+   bottom of the screen: keep views clear of it, and clear of the notch / status
+   bar when launched from the home screen */
+@media (max-width: 47.99rem), (pointer: coarse) {
+  .app-main {
+    padding-bottom: calc(3.5rem + env(safe-area-inset-bottom));
+  }
+}
 @media (max-width: 47.99rem) {
   .app-main {
     padding-top: max(0.75rem, env(safe-area-inset-top));
-    padding-bottom: calc(3.5rem + env(safe-area-inset-bottom));
+  }
+}
+@media (min-width: 48rem) and (pointer: coarse) {
+  .app-main {
+    padding-top: max(1.5rem, env(safe-area-inset-top));
   }
 }
 </style>

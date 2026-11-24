@@ -10,6 +10,9 @@ import { useNarrow } from '../composables/useNarrow'
 // time, full size, with a two-way toggle named by `labels`. `v-model:pane`
 // lets a view jump to the other pane (pick a list item -> its detail).
 // Panes use v-show, so each keeps its state and scroll while hidden.
+//
+// `maximized` hands the second pane the whole split (a reader taking over its
+// page) at any width; the first pane and the handle hide, nothing remounts.
 const props = defineProps({
   direction: { type: String, default: 'horizontal' }, // horizontal = side by side
   storageKey: { type: String, required: true },
@@ -17,6 +20,7 @@ const props = defineProps({
   min: { type: Number, default: 0.12 },
   max: { type: Number, default: 0.88 },
   labels: { type: Array, default: () => ['First', 'Second'] },
+  maximized: { type: Boolean, default: false },
 })
 const pane = defineModel('pane', { type: String, default: 'first' })
 const narrow = useNarrow()
@@ -58,7 +62,7 @@ function reset() {
 <template>
   <!-- phone: one pane at a time -->
   <div v-if="narrow" class="flex min-h-0 min-w-0 flex-col">
-    <div class="mb-2 flex shrink-0 rounded-md border border-edge bg-panel p-0.5 text-xs">
+    <div v-show="!maximized" class="mb-2 flex shrink-0 rounded-md border border-edge bg-panel p-0.5 text-xs">
       <button
         v-for="(label, i) in labels"
         :key="label"
@@ -69,10 +73,10 @@ function reset() {
         {{ label }}
       </button>
     </div>
-    <div v-show="pane === 'first'" class="min-h-0 min-w-0 flex-1">
+    <div v-show="pane === 'first' && !maximized" class="min-h-0 min-w-0 flex-1">
       <slot name="first" />
     </div>
-    <div v-show="pane === 'second'" class="min-h-0 min-w-0 flex-1">
+    <div v-show="pane === 'second' || maximized" class="min-h-0 min-w-0 flex-1">
       <slot name="second" />
     </div>
   </div>
@@ -86,12 +90,14 @@ function reset() {
     ]"
   >
     <div
+      v-show="!maximized"
       class="min-h-0 min-w-0"
       :style="{ flex: `0 1 calc(${ratio * 100}% - 3px)` }"
     >
       <slot name="first" />
     </div>
     <div
+      v-show="!maximized"
       class="group flex shrink-0 items-center justify-center"
       :class="isHorizontal ? 'w-1.5 cursor-col-resize px-px' : 'h-1.5 cursor-row-resize py-px'"
       title="drag to resize - double-click to reset"
